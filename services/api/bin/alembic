@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_DIR="$ROOT_DIR/.venv"
+PYTHON_BIN="$VENV_DIR/bin/python"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Expected a virtualenv at $VENV_DIR. Create it and install requirements first." >&2
+  exit 1
+fi
+
+cd "$ROOT_DIR"
+exec "$PYTHON_BIN" -m alembic "$@"

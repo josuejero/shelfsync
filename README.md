@@ -26,3 +26,30 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest
+```
+
+#### Migrations
+
+Use the repo wrapper so Alembic runs with the `services/api/.venv` interpreter:
+If `alembic` resolves to `/opt/homebrew/bin/alembic`, you're using the Homebrew
+install (Python 3.11) and will hit `psycopg2` import errors.
+
+```bash
+cd services/api
+./bin/alembic upgrade head
+```
+
+Generate new migrations once the database is at head.
+If you see `Target database is not up to date`, run `./bin/alembic upgrade head`
+before autogenerating.
+
+```bash
+cd services/api
+./bin/alembic revision --autogenerate -m "phase1 init schema"
+```
+
+From the repo root:
+
+```bash
+make api-alembic ARGS="revision --autogenerate -m 'phase1 init schema'"
+```

@@ -1,4 +1,4 @@
-.PHONY: infra-up infra-down api-test web-check dev
+.PHONY: infra-up infra-down api-test web-check dev api-alembic
 
 infra-up:
 	docker compose -f infra/docker-compose.yml up -d
@@ -14,3 +14,6 @@ web-check:
 
 dev:
 	./scripts/dev.sh
+
+api-alembic:
+	cd services/api && ./bin/alembic $(ARGS)

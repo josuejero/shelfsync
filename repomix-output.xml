@@ -1,0 +1,703 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  ISSUE_TEMPLATE/
+    bug_report.yml
+    feature_request.yml
+  workflows/
+    ci.yml
+  dependabot.yml
+  PULL_REQUEST_TEMPLATE.md
+apps/
+  web/
+    src/
+      app/
+        globals.css
+        layout.tsx
+        page.tsx
+    .eslintrc.json
+    next-env.d.ts
+    next.config.mjs
+    package.json
+    postcss.config.js
+    tailwind.config.js
+    tsconfig.json
+docs/
+  adr/
+    0001-tech-stack.md
+  architecture.md
+infra/
+  docker-compose.yml
+scripts/
+  dev.sh
+services/
+  api/
+    app/
+      api/
+        __init__.py
+      __init__.py
+      main.py
+    requirements-dev.txt
+    requirements.txt
+.editorconfig
+.gitignore
+.nvmrc
+.python-version
+CODE_OF_CONDUCT.md
+LICENSE
+Makefile
+pyproject.toml
+README.md
+SECURITY.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".github/ISSUE_TEMPLATE/bug_report.yml">
+name: Bug report
+description: Report a problem
+body:
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+    validations:
+      required: true
+</file>
+
+<file path=".github/ISSUE_TEMPLATE/feature_request.yml">
+name: Feature request
+description: Propose a feature for ShelfSync
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should we build?
+    validations:
+      required: true
+</file>
+
+<file path=".github/workflows/ci.yml">
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: services/api/requirements-dev.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements-dev.txt
+      - run: black --check .
+      - run: isort --check-only .
+      - run: mypy app || true
+      - run: pytest
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+</file>
+
+<file path=".github/dependabot.yml">
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/services/api"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+</file>
+
+<file path=".github/PULL_REQUEST_TEMPLATE.md">
+## Summary
+
+## Acceptance criteria
+- [ ] Phase 0 CI passes
+- [ ] Includes tests or explains why not
+
+## Testing
+- [ ] API: pytest
+- [ ] Web: npm run lint && npm run build
+
+## Notes
+</file>
+
+<file path="apps/web/src/app/globals.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  min-height: 100%;
+  background-color: #ffffff;
+}
+</file>
+
+<file path="apps/web/src/app/layout.tsx">
+import "./globals.css";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "ShelfSync",
+  description: "Find library availability for your Goodreads shelves."
+};
+
+export default function RootLayout({
+  children
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body className="bg-white text-gray-900 antialiased">{children}</body>
+    </html>
+  );
+}
+</file>
+
+<file path="apps/web/src/app/page.tsx">
+export default function Home() {
+  return (
+    <main className="min-h-screen p-8">
+      <div className="mx-auto max-w-2xl space-y-6">
+        <h1 className="text-4xl font-bold">ShelfSync</h1>
+        <p className="text-lg text-gray-600">
+          Connect your Goodreads shelf and see what your library has available -
+          in one dashboard.
+        </p>
+
+        <div className="rounded-xl border p-4">
+          <p className="font-medium">Phase 0 status</p>
+          <ul className="list-disc pl-6 text-sm text-gray-600">
+            <li>Web app boots</li>
+            <li>API health endpoint available</li>
+            <li>Postgres + Redis available locally</li>
+            <li>CI gates wired</li>
+          </ul>
+        </div>
+
+        <div className="rounded-xl border p-4 text-sm text-gray-600">
+          <p className="font-medium text-gray-800">Next up</p>
+          <p>
+            Phase 1 adds database models + migrations, env-driven config, and the
+            first adapter skeletons.
+          </p>
+        </div>
+
+        <button
+          className="rounded-lg bg-black px-4 py-2 text-white disabled:opacity-50"
+          disabled
+          title="Phase 3+"
+        >
+          Try demo data (coming soon)
+        </button>
+      </div>
+    </main>
+  );
+}
+</file>
+
+<file path="apps/web/.eslintrc.json">
+{
+  "extends": ["next/core-web-vitals"]
+}
+</file>
+
+<file path="apps/web/next-env.d.ts">
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
+</file>
+
+<file path="apps/web/next.config.mjs">
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true
+};
+
+export default nextConfig;
+</file>
+
+<file path="apps/web/package.json">
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "lint": "next lint",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^14.2.5",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.35",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.5.4"
+  }
+}
+</file>
+
+<file path="apps/web/postcss.config.js">
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {}
+  }
+};
+</file>
+
+<file path="apps/web/tailwind.config.js">
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ["./src/**/*.{js,ts,jsx,tsx,mdx}"],
+  theme: {
+    extend: {}
+  },
+  plugins: []
+};
+</file>
+
+<file path="apps/web/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2020"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
+</file>
+
+<file path="docs/adr/0001-tech-stack.md">
+# ADR 0001: Tech stack
+
+## Status
+Accepted
+
+## Context
+ShelfSync needs a fast-to-demo full-stack portfolio project with modern tooling, strong local dev ergonomics, and a clear path to deployment.
+
+## Decision
+- Web: Next.js + React + TypeScript + Tailwind
+- API: FastAPI + Uvicorn + Pydantic
+- Data: Postgres + SQLAlchemy + Alembic
+- Caching/queue: Redis
+- HTTP: httpx
+
+## Consequences
+- Great developer experience and hiring-manager familiarity.
+- Python backend supports data parsing and automation easily.
+- Clear hosting story: Vercel + Koyeb + Supabase + Upstash.
+</file>
+
+<file path="docs/architecture.md">
+# Architecture (Phase 0)
+
+## High-level
+
+- `apps/web` is a Next.js UI.
+- `services/api` is a FastAPI backend.
+- `infra/docker-compose.yml` runs local Postgres + Redis.
+
+## Data flow (today)
+
+Web -> API: health checks only.
+
+## Data flow (planned)
+
+Web -> API -> Goodreads + Library adapters -> normalized database -> jobs/streams -> UI.
+</file>
+
+<file path="infra/docker-compose.yml">
+name: shelfsync
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: shelfsync
+      POSTGRES_PASSWORD: shelfsync
+      POSTGRES_DB: shelfsync
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shelfsync -d shelfsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+</file>
+
+<file path="scripts/dev.sh">
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Phase 0: start local backing services + run web/api in watch mode
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$ROOT_DIR"
+
+docker compose -f infra/docker-compose.yml up -d
+
+echo "Backends are starting..."
+
+echo "\nStarting API (FastAPI + Uvicorn reload)"
+(
+  cd services/api
+  source .venv/bin/activate
+  uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+) &
+
+API_PID=$!
+
+echo "\nStarting Web (Next dev server)"
+(
+  cd apps/web
+  npm run dev
+) &
+
+WEB_PID=$!
+
+trap 'echo "\nShutting down..."; kill $API_PID $WEB_PID; docker compose -f infra/docker-compose.yml down' INT TERM
+
+wait
+</file>
+
+<file path="services/api/app/api/__init__.py">
+
+</file>
+
+<file path="services/api/app/__init__.py">
+
+</file>
+
+<file path="services/api/app/main.py">
+from fastapi import FastAPI
+
+app = FastAPI(title="ShelfSync API")
+
+
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}
+</file>
+
+<file path="services/api/requirements-dev.txt">
+-r requirements.txt
+
+pytest
+pytest-asyncio
+pytest-cov
+mypy
+black
+isort
+respx
+</file>
+
+<file path="services/api/requirements.txt">
+fastapi
+uvicorn[standard]
+httpx
+requests
+beautifulsoup4
+selectolax
+playwright
+selenium
+python-dotenv
+pydantic
+
+sqlalchemy
+alembic
+psycopg2-binary
+redis
+rq
+celery
+apscheduler
+passlib[bcrypt]
+
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+</file>
+
+<file path=".editorconfig">
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+
+[*.py]
+indent_size = 4
+</file>
+
+<file path=".gitignore">
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Env
+.env
+.env.*
+
+# OS
+.DS_Store
+</file>
+
+<file path=".nvmrc">
+24
+</file>
+
+<file path=".python-version">
+3.14
+</file>
+
+<file path="CODE_OF_CONDUCT.md">
+
+</file>
+
+<file path="LICENSE">
+
+</file>
+
+<file path="Makefile">
+.PHONY: infra-up infra-down api-test web-check dev
+
+infra-up:
+	docker compose -f infra/docker-compose.yml up -d
+
+infra-down:
+	docker compose -f infra/docker-compose.yml down
+
+api-test:
+	cd services/api && . .venv/bin/activate && black . && isort . && pytest
+
+web-check:
+	cd apps/web && npm run lint && npm run build
+
+dev:
+	./scripts/dev.sh
+</file>
+
+<file path="pyproject.toml">
+[tool.black]
+line-length = 100
+target-version = ["py314"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+</file>
+
+<file path="README.md">
+# ShelfSync
+
+ShelfSync links your Goodreads shelves to your local library catalog (Libby/OverDrive-backed) and shows availability in one place.
+
+## Monorepo layout
+
+- `apps/web`: Next.js UI
+- `services/api`: FastAPI API
+- `infra`: Docker Compose for Postgres + Redis
+- `docs`: architecture notes + ADRs
+
+## Phase 0: local dev
+
+### Prereqs
+- Docker
+- Node.js 24
+- Python 3.14
+
+### First-time setup
+
+#### API
+
+```bash
+cd services/api
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+</file>
+
+<file path="SECURITY.md">
+
+</file>
+
+</files>
