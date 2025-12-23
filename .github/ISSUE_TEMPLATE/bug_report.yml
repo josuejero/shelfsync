@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a problem
+body:
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+    validations:
+      required: true
