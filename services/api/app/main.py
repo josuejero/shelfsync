@@ -1,18 +1,19 @@
 import logging
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.books import router as books_router
+from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.health import router as health_router
+from app.api.routes.libraries import router as libraries_router
 from app.api.routes.matching import router as matching_router
+from app.api.routes.settings import router as settings_router
 from app.api.routes.shelf_items import router as shelf_items_router
 from app.api.routes.shelf_sources import router as shelf_sources_router
 from app.core.config import settings
-from app.core.otel import maybe_enable_otel
+from app.core.otel import init_otel, maybe_enable_otel
+from app.middleware.request_id import RequestIdMiddleware
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes.books import router as books_router
-from app.api.routes.dashboard import router as dashboard_router
-from app.api.routes.libraries import router as libraries_router
-from app.api.routes.settings import router as settings_router
 
 
 def configure_logging() -> None:
@@ -34,6 +35,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestIdMiddleware)
 
 # Unversioned health
 app.include_router(health_router)
@@ -49,3 +51,4 @@ v1.include_router(dashboard_router)
 v1.include_router(books_router)
 app.include_router(v1)
 app.include_router(matching_router)
+init_otel(app)

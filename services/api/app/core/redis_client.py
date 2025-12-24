@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 import logging
 from functools import lru_cache
+
 import redis
-from redis import Redis
 from app.core.config import settings
+from redis import Redis
 
 logger = logging.getLogger(__name__)
 

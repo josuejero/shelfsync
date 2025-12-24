@@ -30,3 +30,4 @@ class User(Base):
     )
     shelf_sources = relationship("ShelfSource", back_populates="user", cascade="all, delete-orphan")
     shelf_items = relationship("ShelfItem", back_populates="user", cascade="all, delete-orphan")
+    sync_runs = relationship("SyncRun", back_populates="user", cascade="all, delete-orphan")

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import time
 
-from fastapi import Depends, HTTPException
-
 from app.api.deps import get_current_user
 from app.core.redis_client import get_redis
+from fastapi import Depends, HTTPException
 
 
 def rate_limiter(*, scope: str, limit: int, window_seconds: int):

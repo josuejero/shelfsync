@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import redis
 from app.api.deps import get_current_user
-from app.core.config import settings
 from app.db.session import get_db
 from app.models.availability_snapshot import AvailabilitySnapshot
 from app.models.catalog_item import CatalogItem
@@ -17,6 +15,7 @@ from app.schemas.matching import (
 )
 from app.workers.jobs import refresh_matching_for_user
 from app.workers.queue import get_queue
+from app.workers.redis_conn import get_redis_connection
 from fastapi import APIRouter, Depends, HTTPException
 from rq import Retry
 from rq.job import Job
@@ -37,7 +36,7 @@ def refresh_matching(user=Depends(get_current_user)):
 def refresh_status(job_id: str, user=Depends(get_current_user)):
     # user param enforces auth; job is keyed only by id
     try:
-        conn = redis.from_url(settings.redis_url)
+        conn = get_redis_connection()
         job = Job.fetch(job_id, connection=conn)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Job not found: {e}")

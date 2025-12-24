@@ -53,6 +53,13 @@ apps/
   web/
     src/
       app/
+        api/
+          proxy/
+            sse/
+              route.ts
+        books/
+          [id]/
+            page.tsx
         dashboard/
           matches/
             page.tsx
@@ -60,6 +67,7 @@ apps/
         settings/
           goodreads/
             page.tsx
+          page.tsx
         signin/
           page.tsx
         signup/
@@ -71,8 +79,11 @@ apps/
       components/
         AuthGuard.tsx
         TryDemoButton.tsx
+      hooks/
+        useSyncRun.ts
       lib/
         api.ts
+        syncRuns.ts
       test/
         msw/
           handlers.ts
@@ -110,6 +121,8 @@ services/
   api/
     alembic/
       versions/
+        156614e6d7d6_phase4_seed_libraries.py
+        32191e629780_add_sync_runs_table.py
         8399dceac96e_phase1_init_schema.py
         8f008b42145c_phase2_ingestion_fields.py
         b2c2190162bb_phase3_catalog_matching.py
@@ -122,16 +135,29 @@ services/
       api/
         routes/
           auth.py
+          books.py
+          dashboard.py
           health.py
+          libraries.py
           matching.py
+          settings.py
           shelf_items.py
           shelf_sources.py
+          sync_runs.py
         __init__.py
         deps.py
+        rate_limit.py
+        router.py
       core/
         config.py
         otel.py
+        redis_client.py
+        redis.py
         security.py
+      crud/
+        availability.py
+        shelf_items.py
+        sync_runs.py
       db/
         session.py
       domain/
@@ -142,6 +168,8 @@ services/
         csv_import.py
         fetch.py
         rss.py
+      middleware/
+        request_id.py
       models/
         __init__.py
         availability_snapshot.py
@@ -151,12 +179,21 @@ services/
         library.py
         shelf_item.py
         shelf_source.py
+        sync_run.py
         user_settings.py
         user.py
+      providers/
+        factory.py
+        fixture_provider.py
+        types.py
       schemas/
         auth.py
+        dashboard.py
+        library.py
         matching.py
+        settings.py
         shelf.py
+        sync_run.py
       services/
         catalog/
           factory.py
@@ -167,6 +204,7 @@ services/
         matching/
           matcher.py
           persist.py
+        availability_cache.py
         goodreads_csv.py
         goodreads_rss.py
         import_service.py
@@ -174,8 +212,10 @@ services/
         shelf_import.py
       workers/
         async_utils.py
+        events.py
         jobs.py
         queue.py
+        redis_conn.py
       __init__.py
       main.py
     bin/
@@ -188,6 +228,7 @@ services/
       test_health.py
       test_matching.py
       test_shelf_import_idempotent.py
+      test_sync_runs.py
     .dockerignore
     .env.example
     alembic.ini
@@ -209,6 +250,677 @@ SECURITY.md
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="apps/web/src/app/api/proxy/sse/route.ts">
+import { NextRequest } from "next/server";
+
+export const runtime = "nodejs";
+
+export async function GET(req: NextRequest) {
+  const path = req.nextUrl.searchParams.get("path");
+  if (!path) return new Response("Missing path", { status: 400 });
+
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
+  const upstream = await fetch(`${apiBase}${path}`, {
+    headers: {
+      cookie: req.headers.get("cookie") ?? "",
+      "accept": "text/event-stream",
+    },
+  });
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    },
+  });
+}
+</file>
+
+<file path="apps/web/src/hooks/useSyncRun.ts">
+"use client";
+
+import { getSyncRun, startAvailabilityRefresh, subscribeSyncRun, SyncRun } from "@/lib/syncRuns";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+export function useSyncRun() {
+  const [run, setRun] = useState<SyncRun | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const unsubscribeRef = useRef<null | (() => void)>(null);
+
+  const stop = useCallback(() => {
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
+  }, []);
+
+  const start = useCallback(async () => {
+    setError(null);
+    stop();
+
+    const created = await startAvailabilityRefresh();
+    setRun(created);
+
+    unsubscribeRef.current = subscribeSyncRun(created.id, (evt) => {
+      const t = evt.type;
+      if (t === "progress") {
+        setRun((r) =>
+          r
+            ? {
+                ...r,
+                status: "running",
+                progress_current: evt.payload.current,
+                progress_total: evt.payload.total,
+              }
+            : r
+        );
+      }
+      if (t === "failed") {
+        setRun((r) => (r ? { ...r, status: "failed", error_message: evt.payload.message } : r));
+        stop();
+      }
+      if (t === "succeeded") {
+        setRun((r) => (r ? { ...r, status: "succeeded", progress_current: r.progress_total } : r));
+        stop();
+      }
+    });
+
+    // Fallback polling in case SSE disconnects
+    const poll = async () => {
+      try {
+        const fresh = await getSyncRun(created.id);
+        setRun(fresh);
+        if (fresh.status === "succeeded" || fresh.status === "failed") return;
+        setTimeout(poll, 2500);
+      } catch {
+        setTimeout(poll, 2500);
+      }
+    };
+
+    setTimeout(poll, 2500);
+  }, [stop]);
+
+  useEffect(() => {
+    return () => stop();
+  }, [stop]);
+
+  return { run, error, start, stop };
+}
+</file>
+
+<file path="apps/web/src/lib/syncRuns.ts">
+import { apiFetch } from "@/lib/api";
+
+export type SyncRun = {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  progress_current: number;
+  progress_total: number;
+  error_message?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+};
+
+export async function startAvailabilityRefresh(): Promise<SyncRun> {
+  return apiFetch<SyncRun>("/v1/sync-runs", {
+    method: "POST",
+    body: JSON.stringify({ kind: "availability_refresh" }),
+  });
+}
+
+export async function getSyncRun(id: string): Promise<SyncRun> {
+  return apiFetch<SyncRun>(`/v1/sync-runs/${id}`);
+}
+
+export function subscribeSyncRun(id: string, onEvent: (evt: any) => void) {
+  const es = new EventSource(`/api/proxy/sse?path=/v1/sync-runs/${id}/events`);
+
+  es.addEventListener("sync", (e) => {
+    try {
+      onEvent(JSON.parse((e as MessageEvent).data));
+    } catch {
+      // ignore
+    }
+  });
+
+  es.onerror = () => {
+    // Let caller decide fallback.
+  };
+
+  return () => es.close();
+}
+</file>
+
+<file path="services/api/alembic/versions/32191e629780_add_sync_runs_table.py">
+"""add sync_runs table
+
+Revision ID: 32191e629780
+Revises: 156614e6d7d6
+Create Date: 2025-12-24 07:08:52.372695
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+# revision identifiers, used by Alembic.
+revision: str = "32191e629780"
+down_revision: Union[str, Sequence[str], None] = "156614e6d7d6"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    pass
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    pass
+</file>
+
+<file path="services/api/app/api/routes/sync_runs.py">
+from __future__ import annotations
+
+import json
+import time
+from datetime import datetime
+from typing import Iterator
+from uuid import UUID
+
+from app.api.deps import get_current_user
+from app.core.config import settings
+from app.core.redis import get_redis_async
+from app.crud.sync_runs import create_sync_run, get_sync_run
+from app.schemas.sync_run import SyncRunCreateIn, SyncRunOut
+from app.workers.queue import enqueue_availability_refresh
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/sync-runs", tags=["sync-runs"])
+
+
+@router.post("", response_model=SyncRunOut)
+def start_sync_run(
+    payload: SyncRunCreateIn,
+    db: Session = Depends("get_db"),
+    user=Depends(get_current_user),
+):
+    # For Phase 5 we only support availability_refresh.
+    kind = payload.kind
+    if kind != "availability_refresh":
+        raise HTTPException(status_code=400, detail="Unsupported sync kind")
+
+    run = create_sync_run(db, user_id=user.id, kind=kind)
+
+    # Enqueue worker job.
+    enqueue_availability_refresh(sync_run_id=run.id)
+
+    return run
+
+
+@router.get("/{run_id}", response_model=SyncRunOut)
+def get_sync_run_status(
+    run_id: UUID,
+    db: Session = Depends("get_db"),
+    user=Depends(get_current_user),
+):
+    run = get_sync_run(db, run_id=run_id)
+    if not run or run.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    return run
+
+
+@router.get("/{run_id}/events")
+async def stream_sync_run_events(
+    run_id: UUID,
+    request: Request,
+    user=Depends(get_current_user),
+):
+    """Server-Sent Events stream for a specific sync run."""
+
+    channel = f"sync:{user.id}:{run_id}"
+    r = get_redis_async(settings.redis_url)
+    pubsub = r.pubsub()
+    await pubsub.subscribe(channel)
+
+    async def event_iter() -> Iterator[bytes]:
+        # Send an initial comment to establish the stream
+        yield b": connected\n\n"
+        last_heartbeat = time.time()
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                # Heartbeat to keep proxies from buffering/closing.
+                now = time.time()
+                if now - last_heartbeat > 15:
+                    yield b": keep-alive\n\n"
+                    last_heartbeat = now
+
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not msg:
+                    continue
+
+                data = msg.get("data")
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+
+                # SSE format
+                payload = {
+                    "run_id": str(run_id),
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    **json.loads(data),
+                }
+                out = "event: sync\n" + "data: " + json.dumps(payload) + "\n\n"
+                yield out.encode("utf-8")
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+            await r.close()
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_iter(), media_type="text/event-stream", headers=headers)
+</file>
+
+<file path="services/api/app/api/router.py">
+from app.api.routes import sync_runs
+
+api_router.include_router(sync_runs.router)
+</file>
+
+<file path="services/api/app/core/redis.py">
+from __future__ import annotations
+
+from functools import lru_cache
+
+import redis
+import redis.asyncio as redis_async
+
+
+@lru_cache
+def get_redis(url: str) -> redis.Redis:
+    return redis.Redis.from_url(url, decode_responses=True)
+
+
+def get_redis_async(url: str) -> redis_async.Redis:
+    return redis_async.Redis.from_url(url, decode_responses=False)
+</file>
+
+<file path="services/api/app/crud/availability.py">
+from __future__ import annotations
+
+from typing import Iterable
+
+from app.providers.types import AvailabilityResult
+from app.services.matching.persist import upsert_availability_snapshot
+from sqlalchemy.orm import Session
+
+
+def upsert_snapshots(db: Session, *, user_id: str, results: Iterable[AvailabilityResult]) -> None:
+    """Persist availability snapshots that were returned from the provider."""
+
+    for result in results:
+        upsert_availability_snapshot(
+            db,
+            user_id=user_id,
+            catalog_item_id=result.catalog_item_id,
+            a=result.availability,
+        )
+</file>
+
+<file path="services/api/app/crud/shelf_items.py">
+from __future__ import annotations
+
+from app.models.shelf_item import ShelfItem
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+
+def list_shelf_items_for_user(db: Session, *, user_id: str) -> list[ShelfItem]:
+    """Return the user's shelf items ordered from newest to oldest."""
+    stmt = (
+        select(ShelfItem).where(ShelfItem.user_id == user_id).order_by(ShelfItem.updated_at.desc())
+    )
+    return db.execute(stmt).scalars().all()
+</file>
+
+<file path="services/api/app/crud/sync_runs.py">
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
+from app.models.sync_run import SyncRun
+from sqlalchemy.orm import Session
+
+
+def create_sync_run(db: Session, *, user_id: UUID, kind: str) -> SyncRun:
+    run = SyncRun(user_id=user_id, kind=kind, status="queued", progress_current=0, progress_total=0)
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def set_sync_run_running(db: Session, *, run: SyncRun, total: int) -> SyncRun:
+    run.status = "running"
+    run.started_at = datetime.utcnow()
+    run.progress_total = total
+    run.progress_current = 0
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def update_progress(
+    db: Session, *, run: SyncRun, current: int, total: Optional[int] = None
+) -> SyncRun:
+    run.progress_current = current
+    if total is not None:
+        run.progress_total = total
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def set_sync_run_failed(db: Session, *, run: SyncRun, message: str) -> SyncRun:
+    run.status = "failed"
+    run.error_message = message
+    run.finished_at = datetime.utcnow()
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def set_sync_run_succeeded(db: Session, *, run: SyncRun) -> SyncRun:
+    run.status = "succeeded"
+    run.finished_at = datetime.utcnow()
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def get_sync_run(db: Session, *, run_id: UUID) -> Optional[SyncRun]:
+    return db.query(SyncRun).filter(SyncRun.id == run_id).first()
+
+
+def latest_sync_run_for_user(
+    db: Session, *, user_id: UUID, kind: str = "availability_refresh"
+) -> Optional[SyncRun]:
+    return (
+        db.query(SyncRun)
+        .filter(SyncRun.user_id == user_id, SyncRun.kind == kind)
+        .order_by(SyncRun.created_at.desc())
+        .first()
+    )
+</file>
+
+<file path="services/api/app/middleware/request_id.py">
+import uuid
+
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        req_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
+        request.state.request_id = req_id
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = req_id
+        return response
+</file>
+
+<file path="services/api/app/models/sync_run.py">
+import uuid
+from datetime import datetime
+
+from app.models.base import Base
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+
+class SyncRun(Base):
+    __tablename__ = "sync_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+
+    # e.g. "availability_refresh"
+    kind = Column(String(50), index=True, nullable=False)
+
+    # queued | running | succeeded | failed
+    status = Column(String(20), index=True, nullable=False)
+
+    progress_current = Column(Integer, nullable=False, default=0)
+    progress_total = Column(Integer, nullable=False, default=0)
+
+    error_message = Column(Text, nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    user = relationship("User", back_populates="sync_runs")
+</file>
+
+<file path="services/api/app/providers/factory.py">
+from __future__ import annotations
+
+from typing import Iterable
+
+from app.models.catalog_item import CatalogItem
+from app.models.catalog_match import CatalogMatch
+from app.models.shelf_item import ShelfItem
+from app.providers.types import AvailabilityResult
+from app.services.catalog.factory import get_provider as get_catalog_provider
+from app.workers.async_utils import run_async
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+
+class AvailabilityProvider:
+    """Adapter that fetches provider availability for matched catalog items."""
+
+    def __init__(self, db: Session, user_id: str):
+        self._db = db
+        self._user_id = user_id
+        self._catalog_provider = get_catalog_provider()
+
+    def availability_bulk(self, items: Iterable[ShelfItem]) -> list[AvailabilityResult]:
+        shelf_ids = [s.id for s in items]
+        if not shelf_ids:
+            return []
+
+        stmt = (
+            select(CatalogMatch, CatalogItem)
+            .where(CatalogMatch.user_id == self._user_id)
+            .where(CatalogMatch.shelf_item_id.in_(shelf_ids))
+            .join(CatalogItem, CatalogItem.id == CatalogMatch.catalog_item_id)
+            .where(CatalogItem.provider == self._catalog_provider.name)
+        )
+        rows = self._db.execute(stmt).all()
+        if not rows:
+            return []
+
+        provider_to_catalog: dict[str, str] = {}
+        provider_item_ids: list[str] = []
+        for _, catalog_item in rows:
+            pid = catalog_item.provider_item_id
+            if pid in provider_to_catalog:
+                continue
+            provider_to_catalog[pid] = catalog_item.id
+            provider_item_ids.append(pid)
+
+        if not provider_item_ids:
+            return []
+
+        availabilities = run_async(
+            self._catalog_provider.availability_bulk(provider_item_ids=provider_item_ids)
+        )
+
+        out: list[AvailabilityResult] = []
+        for availability in availabilities:
+            catalog_id = provider_to_catalog.get(availability.provider_item_id)
+            if not catalog_id:
+                continue
+            out.append(AvailabilityResult(catalog_item_id=catalog_id, availability=availability))
+
+        return out
+
+
+def get_provider(db: Session, user_id: str) -> AvailabilityProvider:
+    """
+    Return a provider configured for the given user.
+
+    The provider looks up existing catalog matches and delegates availability
+    lookups to the configured catalog provider.
+    """
+
+    return AvailabilityProvider(db=db, user_id=user_id)
+</file>
+
+<file path="services/api/app/providers/fixture_provider.py">
+import os
+
+
+class FixtureProvider(...):
+    def availability_bulk(self, items):
+        if os.getenv("SYNC_INJECT_FAILURE_ONCE") == "true":
+            os.environ["SYNC_INJECT_FAILURE_ONCE"] = "false"
+            raise RuntimeError("Injected provider failure (demo)")
+
+        # existing deterministic fixture logic
+</file>
+
+<file path="services/api/app/providers/types.py">
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from app.services.catalog.types import ProviderAvailability
+
+
+@dataclass(frozen=True)
+class AvailabilityResult:
+    """Holds availability data keyed by the catalog item that owns it."""
+
+    catalog_item_id: str
+    availability: ProviderAvailability
+</file>
+
+<file path="services/api/app/schemas/sync_run.py">
+from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
+from pydantic import BaseModel
+
+
+class SyncRunOut(BaseModel):
+    id: UUID
+    kind: str
+    status: str
+    progress_current: int
+    progress_total: int
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SyncRunCreateIn(BaseModel):
+    kind: str = "availability_refresh"
+
+
+class SyncRunEvent(BaseModel):
+    # SSE event payload
+    type: str
+    run_id: UUID
+    ts: datetime
+    payload: dict
+</file>
+
+<file path="services/api/app/workers/events.py">
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Any
+
+from app.core.config import settings
+from app.core.redis import get_redis
+
+
+def publish_sync_event(*, user_id: str, run_id: str, type_: str, payload: dict[str, Any]):
+    r = get_redis(settings.redis_url)
+    channel = f"sync:{user_id}:{run_id}"
+    body = {
+        "type": type_,
+        "payload": payload,
+        "ts": datetime.utcnow().isoformat() + "Z",
+    }
+    r.publish(channel, json.dumps(body))
+</file>
+
+<file path="services/api/app/workers/redis_conn.py">
+from __future__ import annotations
+
+import redis
+from app.core.config import settings
+from redis import Redis
+
+
+def get_redis_connection() -> Redis:
+    """Return a Redis connection suitable for RQ (jobs + metadata)."""
+    return redis.from_url(settings.redis_url)
+</file>
+
+<file path="services/api/tests/test_sync_runs.py">
+def test_start_sync_run_creates_run_and_enqueues_job(client, monkeypatch):
+    # Arrange: sign in user (reuse existing helpers)
+    # monkeypatch enqueue_availability_refresh to avoid hitting redis
+
+    called = {}
+
+    def fake_enqueue_availability_refresh(*, sync_run_id):
+        called["id"] = str(sync_run_id)
+
+    monkeypatch.setattr("app.api.routes.sync_runs.enqueue_availability_refresh", fake_enqueue_availability_refresh)
+
+    # Act
+    resp = client.post("/v1/sync-runs", json={"kind": "availability_refresh"})
+
+    # Assert
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "queued"
+    assert called["id"] == body["id"]
+</file>
 
 <file path=".github/ISSUE_TEMPLATE/bug_report.yml">
 name: Bug report
@@ -370,6 +1082,205 @@ updates:
 - [ ] Web: npm run lint && npm run build
 
 ## Notes
+</file>
+
+<file path="apps/web/src/app/books/[id]/page.tsx">
+"use client";
+
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
+
+import { AuthGuard } from "@/components/AuthGuard";
+import { apiFetch } from "@/lib/api";
+
+type BookDetail = {
+  shelf_item: {
+    id: string;
+    title: string;
+    author: string | null;
+    isbn10: string | null;
+    isbn13: string | null;
+    asin: string | null;
+    shelf: string | null;
+    needs_fuzzy_match: boolean;
+    created_at: string;
+  };
+  source: {
+    source_type: string | null;
+    source_ref: string | null;
+    last_synced_at: string | null;
+    last_sync_status: string | null;
+    last_sync_error: string | null;
+  };
+  match:
+    | {
+        method: string;
+        confidence: number;
+        evidence: Record<string, unknown>;
+        catalog_item: {
+          id: string;
+          provider: string;
+          provider_item_id: string;
+          title: string;
+          author: string | null;
+          isbn10: string | null;
+          isbn13: string | null;
+          asin: string | null;
+        };
+      }
+    | null;
+  availability: {
+    format: string;
+    status: string;
+    copies_available: number | null;
+    copies_total: number | null;
+    holds: number | null;
+    deep_link: string | null;
+    last_checked_at: string;
+  }[];
+  settings: { library_system: string | null; preferred_formats: string[]; updated_at: string };
+};
+
+export default function BookDetailPage() {
+  const params = useParams();
+  const id = String((params as any).id);
+
+  const [data, setData] = useState<BookDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      setError(null);
+      setLoading(true);
+      try {
+        const res = await apiFetch<BookDetail>(`/v1/books/${id}`);
+        setData(res);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Failed to load book.";
+        setError(msg);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [id]);
+
+  const book = data?.shelf_item;
+
+  return (
+    <AuthGuard>
+      <main className="min-h-screen px-6 py-10">
+        <div className="mx-auto flex max-w-3xl flex-col gap-6">
+          <header className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h1 className="font-display text-3xl tracking-tight">Book</h1>
+                <p className="text-sm text-black/60">Match + availability details.</p>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <Link className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5" href="/dashboard">
+                  Back
+                </Link>
+                <Link className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5" href="/settings">
+                  Preferences
+                </Link>
+              </div>
+            </div>
+          </header>
+
+          {loading ? <div className="text-sm text-black/60">Loading…</div> : null}
+          {error ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+              {error.includes("429") ? "Too many requests. Please try again in a moment." : error}
+            </div>
+          ) : null}
+
+          {!loading && !error && data && book ? (
+            <>
+              <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+                <div className="font-display text-2xl tracking-tight">{book.title}</div>
+                <div className="text-sm text-black/60">{book.author ?? "Unknown author"}</div>
+
+                <div className="mt-4 grid gap-2 text-sm">
+                  <div><span className="text-black/50">Shelf:</span> {book.shelf ?? "—"}</div>
+                  <div className="text-xs text-black/60">
+                    ISBN13: {book.isbn13 ?? "—"} · ISBN10: {book.isbn10 ?? "—"} · ASIN: {book.asin ?? "—"}
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+                <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-black/50">Match</h2>
+                {data.match ? (
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <span className="text-black/50">Confidence:</span> {Math.round(data.match.confidence * 100)}% ·{" "}
+                      <span className="text-black/50">Method:</span> {data.match.method}
+                    </div>
+                    <div className="text-xs text-black/60">
+                      Provider: {data.match.catalog_item.provider} · Provider item: {data.match.catalog_item.provider_item_id}
+                    </div>
+                    <pre className="mt-3 overflow-x-auto rounded-2xl border border-black/10 bg-white p-4 text-xs">
+{JSON.stringify(data.match.evidence ?? {}, null, 2)}
+                    </pre>
+                  </div>
+                ) : (
+                  <div className="text-sm text-black/60">No match yet. Run matching from the dashboard.</div>
+                )}
+              </section>
+
+              <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+                <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-black/50">Availability</h2>
+                {data.settings.library_system ? null : (
+                  <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
+                    Select a library in <Link className="underline" href="/settings">Preferences</Link> to enable availability.
+                  </div>
+                )}
+
+                {data.availability.length ? (
+                  <div className="space-y-3">
+                    {data.availability.map((a) => (
+                      <div key={a.format} className="rounded-2xl border border-black/10 bg-white p-4 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-medium">{a.format}</div>
+                          <div className="text-black/60">{a.status}</div>
+                        </div>
+                        <div className="mt-2 text-xs text-black/60">
+                          Copies: {a.copies_available ?? "—"}/{a.copies_total ?? "—"} · Holds: {a.holds ?? "—"}
+                        </div>
+                        <div className="mt-2 text-xs text-black/60">
+                          Last checked: {new Date(a.last_checked_at).toLocaleString()}
+                        </div>
+                        {a.deep_link ? (
+                          <a
+                            className="mt-3 inline-block rounded-full border border-black/10 px-4 py-2 text-xs hover:bg-black/5"
+                            href={a.deep_link}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open in library
+                          </a>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-black/60">No availability data yet.</div>
+                )}
+
+                <div className="mt-4 text-xs text-black/50">
+                  Source: {data.source.source_type ?? "—"}
+                  {data.source.last_synced_at ? ` · last shelf sync: ${new Date(data.source.last_synced_at).toLocaleString()}` : ""}
+                </div>
+              </section>
+            </>
+          ) : null}
+        </div>
+      </main>
+    </AuthGuard>
+  );
+}
 </file>
 
 <file path="apps/web/src/app/dashboard/matches/page.tsx">
@@ -800,6 +1711,169 @@ export default function GoodreadsSettingsPage() {
         </section>
       </div>
     </main>
+  );
+}
+</file>
+
+<file path="apps/web/src/app/settings/page.tsx">
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+
+import { AuthGuard } from "@/components/AuthGuard";
+import { apiFetch } from "@/lib/api";
+
+type SettingsOut = { library_system: string | null; preferred_formats: string[]; updated_at: string };
+type LibraryOut = { id: string; name: string };
+
+export default function SettingsPage() {
+  const [settings, setSettings] = useState<SettingsOut | null>(null);
+  const [libraries, setLibraries] = useState<LibraryOut[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+
+  const [librarySystem, setLibrarySystem] = useState<string>("");
+  const [formats, setFormats] = useState<{ ebook: boolean; audiobook: boolean }>({ ebook: true, audiobook: false });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [s, libs] = await Promise.all([
+          apiFetch<SettingsOut>("/v1/settings"),
+          apiFetch<LibraryOut[]>("/v1/libraries"),
+        ]);
+        setSettings(s);
+        setLibraries(libs);
+        setLibrarySystem(s.library_system ?? "");
+        setFormats({ ebook: s.preferred_formats.includes("ebook"), audiobook: s.preferred_formats.includes("audiobook") });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Failed to load settings.";
+        setError(msg);
+      }
+    })();
+  }, []);
+
+  const preferredFormats = useMemo(() => {
+    const out: string[] = [];
+    if (formats.ebook) out.push("ebook");
+    if (formats.audiobook) out.push("audiobook");
+    // Always keep at least one format selected
+    return out.length ? out : ["ebook"];
+  }, [formats]);
+
+  async function save() {
+    setOk(null);
+    setError(null);
+    setSaving(true);
+    try {
+      const res = await apiFetch<SettingsOut>("/v1/settings", {
+        method: "PATCH",
+        body: JSON.stringify({
+          library_system: librarySystem || null,
+          preferred_formats: preferredFormats,
+        }),
+      });
+      setSettings(res);
+      setOk("Saved.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to save.";
+      setError(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <AuthGuard>
+      <main className="min-h-screen px-6 py-10">
+        <div className="mx-auto flex max-w-3xl flex-col gap-6">
+          <header className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h1 className="font-display text-3xl tracking-tight">Preferences</h1>
+                <p className="text-sm text-black/60">Choose your library and formats.</p>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <Link className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5" href="/dashboard">
+                  Back
+                </Link>
+                <Link className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5" href="/settings/goodreads">
+                  Import/Connect
+                </Link>
+              </div>
+            </div>
+          </header>
+
+          <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+            {error ? (
+              <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">{error}</div>
+            ) : null}
+            {ok ? (
+              <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                {ok}
+              </div>
+            ) : null}
+
+            <div className="space-y-5">
+              <div>
+                <label className="mb-1 block text-sm font-medium">Library</label>
+                <select
+                  value={librarySystem}
+                  onChange={(e) => setLibrarySystem(e.target.value)}
+                  className="w-full rounded-2xl border border-black/10 bg-white px-4 py-2 text-sm"
+                >
+                  <option value="">— Select a library —</option>
+                  {libraries.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name} ({l.id})
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 text-xs text-black/60">Library selection is used to scope availability lookups and caching.</p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">Preferred formats</label>
+                <div className="flex flex-wrap gap-3 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={formats.ebook}
+                      onChange={(e) => setFormats((f) => ({ ...f, ebook: e.target.checked }))}
+                    />
+                    Ebook
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={formats.audiobook}
+                      onChange={(e) => setFormats((f) => ({ ...f, audiobook: e.target.checked }))}
+                    />
+                    Audiobook
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-black/60">At least one format must be selected.</p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-black/60">
+                  Last updated: {settings?.updated_at ? new Date(settings.updated_at).toLocaleString() : "—"}
+                </div>
+                <button
+                  onClick={save}
+                  disabled={saving}
+                  className="rounded-full bg-black px-5 py-2 text-sm text-white disabled:opacity-60"
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </AuthGuard>
   );
 }
 </file>
@@ -1566,6 +2640,34 @@ trap 'echo "\nShutting down..."; kill $API_PID $WEB_PID; docker compose -f infra
 wait
 </file>
 
+<file path="services/api/alembic/versions/156614e6d7d6_phase4_seed_libraries.py">
+"""phase4 seed libraries
+
+Revision ID: 156614e6d7d6
+Revises: bedca43b8c03
+Create Date: 2025-12-24 06:17:16.861999
+
+"""
+
+from typing import Sequence, Union
+
+# revision identifiers, used by Alembic.
+revision: str = "156614e6d7d6"
+down_revision: Union[str, Sequence[str], None] = "bedca43b8c03"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    pass
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    pass
+</file>
+
 <file path="services/api/alembic/versions/8399dceac96e_phase1_init_schema.py">
 """phase1 init schema
 
@@ -1874,41 +2976,6 @@ def downgrade() -> None:
     # ### end Alembic commands ###
 </file>
 
-<file path="services/api/alembic/versions/bedca43b8c03_phase3_catalog_matching.py">
-"""phase3 catalog matching
-
-Revision ID: bedca43b8c03
-Revises: b2c2190162bb
-Create Date: 2025-12-23 19:50:47.846892
-
-"""
-
-from typing import Sequence, Union
-
-import sqlalchemy as sa
-from alembic import op
-
-# revision identifiers, used by Alembic.
-revision: str = "bedca43b8c03"
-down_revision: Union[str, Sequence[str], None] = "b2c2190162bb"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
-
-
-def upgrade() -> None:
-    """Upgrade schema."""
-    # ### commands auto generated by Alembic - please adjust! ###
-    pass
-    # ### end Alembic commands ###
-
-
-def downgrade() -> None:
-    """Downgrade schema."""
-    # ### commands auto generated by Alembic - please adjust! ###
-    pass
-    # ### end Alembic commands ###
-</file>
-
 <file path="services/api/alembic/versions/c7a5b2b4af1e_add_missing_shelf_columns.py">
 """add missing shelf columns
 
@@ -2098,12 +3165,447 @@ def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
 </file>
 
+<file path="services/api/app/api/routes/books.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from app.api.deps import get_current_user
+from app.api.rate_limit import rate_limiter
+from app.core.config import settings
+from app.db.session import get_db
+from app.models.availability_snapshot import AvailabilitySnapshot
+from app.models.catalog_item import CatalogItem
+from app.models.catalog_match import CatalogMatch
+from app.models.shelf_item import ShelfItem
+from app.models.shelf_source import ShelfSource
+from app.models.user_settings import UserSettings
+from app.schemas.matching import CatalogItemOut
+from app.services.availability_cache import get_availability_cached
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/v1", tags=["books"])
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@router.get(
+    "/books/{shelf_item_id}",
+    dependencies=[
+        Depends(
+            rate_limiter(
+                scope="books",
+                limit=settings.rate_limit_books_per_window,
+                window_seconds=settings.rate_limit_window_secs,
+            )
+        )
+    ],
+)
+def get_book_detail(
+    shelf_item_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    s = db.get(UserSettings, user.id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    it = (
+        db.query(ShelfItem)
+        .filter(ShelfItem.user_id == user.id)
+        .filter(ShelfItem.id == shelf_item_id)
+        .first()
+    )
+    if not it:
+        raise HTTPException(status_code=404, detail="Shelf item not found")
+
+    source = None
+    if it.shelf_source_id:
+        source = db.get(ShelfSource, it.shelf_source_id)
+
+    cm = (
+        db.query(CatalogMatch)
+        .filter(CatalogMatch.user_id == user.id)
+        .filter(CatalogMatch.shelf_item_id == it.id)
+        .first()
+    )
+
+    ci = db.get(CatalogItem, cm.catalog_item_id) if cm else None
+
+    formats = s.preferred_formats or ["ebook"]
+    library_system = s.library_system
+
+    # Ensure availability snapshots are present / fresh
+    avail_out = []
+
+    if ci and library_system:
+        now = _now_utc()
+        stale_cutoff = now.timestamp() - float(settings.availability_cache_ttl_secs)
+
+        snaps = (
+            db.query(AvailabilitySnapshot)
+            .filter(AvailabilitySnapshot.user_id == user.id)
+            .filter(AvailabilitySnapshot.catalog_item_id == ci.id)
+            .filter(AvailabilitySnapshot.format.in_(formats))
+            .all()
+        )
+        snap_by_fmt = {s.format: s for s in snaps}
+
+        needs_refresh = False
+        for fmt in formats:
+            snap = snap_by_fmt.get(fmt)
+            if not snap or snap.last_checked_at.timestamp() < stale_cutoff:
+                needs_refresh = True
+
+        if needs_refresh:
+            cached = get_availability_cached(
+                library_system=library_system,
+                provider_item_ids=[ci.provider_item_id],
+                formats=formats,
+            )
+
+            for (_pid, fmt), entry in cached.items():
+                snap = snap_by_fmt.get(fmt)
+                if not snap:
+                    snap = AvailabilitySnapshot(
+                        user_id=user.id,
+                        catalog_item_id=ci.id,
+                        format=fmt,
+                        status=str(entry.availability.status),
+                        copies_available=entry.availability.copies_available,
+                        copies_total=entry.availability.copies_total,
+                        holds=entry.availability.holds,
+                        deep_link=entry.availability.deep_link,
+                        last_checked_at=entry.last_checked_at,
+                    )
+                    db.add(snap)
+                    snap_by_fmt[fmt] = snap
+                else:
+                    snap.status = str(entry.availability.status)
+                    snap.copies_available = entry.availability.copies_available
+                    snap.copies_total = entry.availability.copies_total
+                    snap.holds = entry.availability.holds
+                    snap.deep_link = entry.availability.deep_link
+                    snap.last_checked_at = entry.last_checked_at
+
+            db.commit()
+
+        # Build output
+        for fmt in formats:
+            snap = snap_by_fmt.get(fmt)
+            if not snap:
+                continue
+            avail_out.append(
+                {
+                    "format": snap.format,
+                    "status": snap.status,
+                    "copies_available": snap.copies_available,
+                    "copies_total": snap.copies_total,
+                    "holds": snap.holds,
+                    "deep_link": snap.deep_link,
+                    "last_checked_at": snap.last_checked_at,
+                }
+            )
+
+    return {
+        "shelf_item": {
+            "id": it.id,
+            "title": it.title,
+            "author": it.author,
+            "isbn10": it.isbn10,
+            "isbn13": it.isbn13,
+            "asin": it.asin,
+            "shelf": it.shelf,
+            "needs_fuzzy_match": it.needs_fuzzy_match,
+            "created_at": it.created_at,
+        },
+        "source": {
+            "source_type": source.source_type if source else None,
+            "source_ref": source.source_ref if source else None,
+            "last_synced_at": source.last_synced_at if source else None,
+            "last_sync_status": source.last_sync_status if source else None,
+            "last_sync_error": source.last_sync_error if source else None,
+        },
+        "match": (
+            {
+                "method": cm.method,
+                "confidence": float(cm.confidence),
+                "evidence": cm.evidence,
+                "catalog_item": CatalogItemOut(
+                    id=ci.id,
+                    provider=ci.provider,
+                    provider_item_id=ci.provider_item_id,
+                    title=ci.title,
+                    author=ci.author,
+                    isbn10=ci.isbn10,
+                    isbn13=ci.isbn13,
+                    asin=ci.asin,
+                ).model_dump(),
+            }
+            if (cm and ci)
+            else None
+        ),
+        "availability": avail_out,
+        "settings": {
+            "library_system": s.library_system,
+            "preferred_formats": s.preferred_formats,
+            "updated_at": s.updated_at,
+        },
+    }
+</file>
+
+<file path="services/api/app/api/routes/dashboard.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from app.api.deps import get_current_user
+from app.api.rate_limit import rate_limiter
+from app.core.config import settings
+from app.db.session import get_db
+from app.models.availability_snapshot import AvailabilitySnapshot
+from app.models.catalog_item import CatalogItem
+from app.models.catalog_match import CatalogMatch
+from app.models.shelf_item import ShelfItem
+from app.models.shelf_source import ShelfSource
+from app.models.user_settings import UserSettings
+from app.schemas.dashboard import (
+    AvailabilityOut,
+    DashboardOut,
+    DashboardRowOut,
+    LastSyncOut,
+    MatchMiniOut,
+    PageOut,
+)
+from app.services.availability_cache import get_availability_cached
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/v1", tags=["dashboard"])
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@router.get(
+    "/dashboard",
+    response_model=DashboardOut,
+    dependencies=[
+        Depends(
+            rate_limiter(
+                scope="dashboard",
+                limit=settings.rate_limit_dashboard_per_window,
+                window_seconds=settings.rate_limit_window_secs,
+            )
+        )
+    ],
+)
+def get_dashboard(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    # Settings
+    s = db.get(UserSettings, user.id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    formats = s.preferred_formats or ["ebook"]
+    library_system = s.library_system
+
+    # Last sync — pick most recently updated active source
+    source = (
+        db.query(ShelfSource)
+        .filter(ShelfSource.user_id == user.id)
+        .filter(ShelfSource.is_active.is_(True))
+        .order_by(ShelfSource.updated_at.desc())
+        .first()
+    )
+
+    last_sync = LastSyncOut(
+        source_type=source.source_type if source else None,
+        source_id=source.id if source else None,
+        last_synced_at=source.last_synced_at if source else None,
+        last_sync_status=source.last_sync_status if source else None,
+        last_sync_error=source.last_sync_error if source else None,
+    )
+
+    q = db.query(ShelfItem).filter(ShelfItem.user_id == user.id)
+    total = q.count()
+
+    items = q.order_by(ShelfItem.title.asc()).offset(offset).limit(limit).all()
+    shelf_item_ids = [it.id for it in items]
+
+    # Matches + catalog items
+    match_rows = (
+        db.query(CatalogMatch, CatalogItem)
+        .join(CatalogItem, CatalogItem.id == CatalogMatch.catalog_item_id)
+        .filter(CatalogMatch.user_id == user.id)
+        .filter(CatalogMatch.shelf_item_id.in_(shelf_item_ids))
+        .all()
+    )
+
+    match_by_shelf: dict[str, tuple[CatalogMatch, CatalogItem]] = {
+        cm.shelf_item_id: (cm, ci) for cm, ci in match_rows
+    }
+
+    # Availability snapshots already in DB
+    catalog_items = [ci for _, ci in match_rows]
+    catalog_item_ids = [ci.id for ci in catalog_items]
+
+    snapshots = []
+    if catalog_item_ids:
+        snapshots = (
+            db.query(AvailabilitySnapshot)
+            .filter(AvailabilitySnapshot.user_id == user.id)
+            .filter(AvailabilitySnapshot.catalog_item_id.in_(catalog_item_ids))
+            .filter(AvailabilitySnapshot.format.in_(formats))
+            .all()
+        )
+
+    snap_by_key = {(s.catalog_item_id, s.format): s for s in snapshots}
+
+    # Refresh stale/missing snapshots when library is selected
+    now = _now_utc()
+    stale_cutoff = now.timestamp() - float(settings.availability_cache_ttl_secs)
+
+    to_refresh_provider_item_ids: set[str] = set()
+    provider_item_to_catalog: dict[str, str] = {}
+
+    for _cm, ci in match_rows:
+        provider_item_to_catalog[ci.provider_item_id] = ci.id
+        for fmt in formats:
+            snap = snap_by_key.get((ci.id, fmt))
+            if not snap:
+                to_refresh_provider_item_ids.add(ci.provider_item_id)
+                continue
+            if snap.last_checked_at.timestamp() < stale_cutoff:
+                to_refresh_provider_item_ids.add(ci.provider_item_id)
+
+    if library_system and to_refresh_provider_item_ids:
+        cached = get_availability_cached(
+            library_system=library_system,
+            provider_item_ids=sorted(to_refresh_provider_item_ids),
+            formats=formats,
+        )
+
+        # Upsert snapshots in one pass
+        for (provider_item_id, fmt), entry in cached.items():
+            catalog_item_id = provider_item_to_catalog.get(provider_item_id)
+            if not catalog_item_id:
+                continue
+
+            snap = snap_by_key.get((catalog_item_id, fmt))
+            if not snap:
+                snap = AvailabilitySnapshot(
+                    user_id=user.id,
+                    catalog_item_id=catalog_item_id,
+                    format=fmt,
+                    status=str(entry.availability.status),
+                    copies_available=entry.availability.copies_available,
+                    copies_total=entry.availability.copies_total,
+                    holds=entry.availability.holds,
+                    deep_link=entry.availability.deep_link,
+                    last_checked_at=entry.last_checked_at,
+                )
+                db.add(snap)
+                snap_by_key[(catalog_item_id, fmt)] = snap
+            else:
+                snap.status = str(entry.availability.status)
+                snap.copies_available = entry.availability.copies_available
+                snap.copies_total = entry.availability.copies_total
+                snap.holds = entry.availability.holds
+                snap.deep_link = entry.availability.deep_link
+                snap.last_checked_at = entry.last_checked_at
+
+        db.commit()
+
+    # Build response
+    out_items: list[DashboardRowOut] = []
+
+    for it in items:
+        match = None
+        availability: list[AvailabilityOut] = []
+
+        pair = match_by_shelf.get(it.id)
+        if pair:
+            cm, ci = pair
+            match = MatchMiniOut(
+                catalog_item_id=ci.id,
+                provider=ci.provider,
+                provider_item_id=ci.provider_item_id,
+                method=cm.method,
+                confidence=float(cm.confidence),
+            )
+
+            for fmt in formats:
+                snap = snap_by_key.get((ci.id, fmt))
+                if not snap:
+                    continue
+                availability.append(
+                    AvailabilityOut(
+                        format=snap.format,
+                        status=snap.status,
+                        copies_available=snap.copies_available,
+                        copies_total=snap.copies_total,
+                        holds=snap.holds,
+                        deep_link=snap.deep_link,
+                        last_checked_at=snap.last_checked_at,
+                    )
+                )
+
+        out_items.append(
+            DashboardRowOut(
+                shelf_item_id=it.id,
+                title=it.title,
+                author=it.author,
+                shelf=it.shelf,
+                needs_fuzzy_match=it.needs_fuzzy_match,
+                match=match,
+                availability=availability,
+            )
+        )
+
+    return {
+        "settings": {
+            "library_system": s.library_system,
+            "preferred_formats": s.preferred_formats,
+            "updated_at": s.updated_at,
+        },
+        "last_sync": last_sync,
+        "page": PageOut(limit=limit, offset=offset, total=total),
+        "items": out_items,
+    }
+</file>
+
+<file path="services/api/app/api/routes/libraries.py">
+from __future__ import annotations
+
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.models.library import Library
+from app.schemas.library import LibraryOut
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/v1", tags=["libraries"])
+
+
+@router.get("/libraries", response_model=list[LibraryOut])
+def list_libraries(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    # user dependency enforces auth
+    return db.query(Library).order_by(Library.name.asc()).all()
+</file>
+
 <file path="services/api/app/api/routes/matching.py">
 from __future__ import annotations
 
-import redis
 from app.api.deps import get_current_user
-from app.core.config import settings
 from app.db.session import get_db
 from app.models.availability_snapshot import AvailabilitySnapshot
 from app.models.catalog_item import CatalogItem
@@ -2118,6 +3620,7 @@ from app.schemas.matching import (
 )
 from app.workers.jobs import refresh_matching_for_user
 from app.workers.queue import get_queue
+from app.workers.redis_conn import get_redis_connection
 from fastapi import APIRouter, Depends, HTTPException
 from rq import Retry
 from rq.job import Job
@@ -2138,7 +3641,7 @@ def refresh_matching(user=Depends(get_current_user)):
 def refresh_status(job_id: str, user=Depends(get_current_user)):
     # user param enforces auth; job is keyed only by id
     try:
-        conn = redis.from_url(settings.redis_url)
+        conn = get_redis_connection()
         job = Job.fetch(job_id, connection=conn)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Job not found: {e}")
@@ -2282,6 +3785,54 @@ def get_match(
     )
 </file>
 
+<file path="services/api/app/api/routes/settings.py">
+from __future__ import annotations
+
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.models.user_settings import UserSettings
+from app.schemas.settings import SettingsPatchIn, UserSettingsOut
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/v1", tags=["settings"])
+
+
+@router.get("/settings", response_model=UserSettingsOut)
+def get_settings(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    s = db.get(UserSettings, user.id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Settings not found")
+    return s
+
+
+@router.patch("/settings", response_model=UserSettingsOut)
+def patch_settings(
+    payload: SettingsPatchIn,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    s = db.get(UserSettings, user.id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    if payload.library_system is not None:
+        s.library_system = payload.library_system
+
+    if payload.preferred_formats is not None:
+        # Normalize + de-dupe, keep stable order ebook->audiobook
+        want = []
+        for fmt in ["ebook", "audiobook"]:
+            if fmt in payload.preferred_formats:
+                want.append(fmt)
+        s.preferred_formats = want
+
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+</file>
+
 <file path="services/api/app/api/__init__.py">
 
 </file>
@@ -2334,6 +3885,47 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 </file>
 
+<file path="services/api/app/api/rate_limit.py">
+from __future__ import annotations
+
+import time
+
+from app.api.deps import get_current_user
+from app.core.redis_client import get_redis
+from fastapi import Depends, HTTPException
+
+
+def rate_limiter(*, scope: str, limit: int, window_seconds: int):
+    """Simple fixed-window rate limit backed by Redis.
+
+    Keyed by: scope + user_id + window bucket.
+    """
+
+    def _dep(user=Depends(get_current_user)):
+        r = get_redis()
+        if r is None:
+            return  # graceful degrade
+
+        now = int(time.time())
+        bucket = now // window_seconds
+        key = f"rl:{scope}:{user.id}:{bucket}"
+
+        # INCR then set expiry once per bucket
+        count = int(r.incr(key))
+        if count == 1:
+            r.expire(key, window_seconds)
+
+        if count > limit:
+            retry_after = window_seconds - (now % window_seconds)
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    return _dep
+</file>
+
 <file path="services/api/app/core/otel.py">
 from __future__ import annotations
 
@@ -2342,6 +3934,15 @@ import logging
 from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
+
+from app.core.config import settings
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 
 def maybe_enable_otel(app: FastAPI, enabled: bool, service_name: str) -> None:
@@ -2365,6 +3966,48 @@ def maybe_enable_otel(app: FastAPI, enabled: bool, service_name: str) -> None:
 
     FastAPIInstrumentor.instrument_app(app)
     logger.info("OpenTelemetry instrumentation enabled")
+
+
+def init_otel(app) -> None:
+    if not getattr(settings, "otel_enabled", False):
+        return
+
+    resource = Resource.create({"service.name": "shelfsync-api"})
+    provider = TracerProvider(resource=resource)
+
+    exporter = OTLPSpanExporter(
+        endpoint=getattr(settings, "otel_otlp_endpoint", "http://localhost:4318/v1/traces")
+    )
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    trace.set_tracer_provider(provider)
+
+    FastAPIInstrumentor.instrument_app(app)
+    HTTPXClientInstrumentor().instrument()
+</file>
+
+<file path="services/api/app/core/redis_client.py">
+from __future__ import annotations
+
+import logging
+from functools import lru_cache
+
+import redis
+from app.core.config import settings
+from redis import Redis
+
+logger = logging.getLogger(__name__)
+
+
+@lru_cache
+def get_redis() -> Redis | None:
+    try:
+        client: Redis = redis.from_url(settings.redis_url, decode_responses=True)
+        client.ping()
+        return client
+    except Exception as exc:
+        logger.warning("Redis unavailable; caching/rate limiting disabled: %s", exc)
+        return None
 </file>
 
 <file path="services/api/app/db/session.py">
@@ -2480,45 +4123,6 @@ def get_db() -> Generator[Session, None, None]:
     }
   ]
 }
-</file>
-
-<file path="services/api/app/models/availability_snapshot.py">
-from __future__ import annotations
-
-from datetime import datetime, timezone
-from uuid import uuid4
-
-from app.models.base import Base
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
-
-
-class AvailabilitySnapshot(Base):
-    __tablename__ = "availability_snapshots"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-
-    user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    catalog_item_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-
-    format: Mapped[str] = mapped_column(String(20), nullable=False)  # ebook | audiobook
-    status: Mapped[str] = mapped_column(String(20), nullable=False)  # available | hold | not_owned
-
-    copies_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    copies_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    holds: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    deep_link: Mapped[str | None] = mapped_column(String(500), nullable=True)
-
-    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "catalog_item_id", "format", name="uq_avail_user_item_format"),
-    )
 </file>
 
 <file path="services/api/app/models/base.py">
@@ -2705,6 +4309,7 @@ class User(Base):
     )
     shelf_sources = relationship("ShelfSource", back_populates="user", cascade="all, delete-orphan")
     shelf_items = relationship("ShelfItem", back_populates="user", cascade="all, delete-orphan")
+    sync_runs = relationship("SyncRun", back_populates="user", cascade="all, delete-orphan")
 </file>
 
 <file path="services/api/app/schemas/auth.py">
@@ -2726,6 +4331,78 @@ class LoginIn(BaseModel):
 class UserOut(BaseModel):
     id: str
     email: EmailStr
+
+    class Config:
+        from_attributes = True
+</file>
+
+<file path="services/api/app/schemas/dashboard.py">
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel
+
+
+class MatchMiniOut(BaseModel):
+    catalog_item_id: str
+    provider: str
+    provider_item_id: str
+    method: str
+    confidence: float
+
+
+class AvailabilityOut(BaseModel):
+    format: str
+    status: str
+    copies_available: int | None
+    copies_total: int | None
+    holds: int | None
+    deep_link: str | None
+    last_checked_at: datetime
+
+
+class DashboardRowOut(BaseModel):
+    shelf_item_id: str
+    title: str
+    author: str | None
+    shelf: str | None
+    needs_fuzzy_match: bool
+
+    match: MatchMiniOut | None
+    availability: list[AvailabilityOut]
+
+
+class LastSyncOut(BaseModel):
+    source_type: str | None
+    source_id: str | None
+    last_synced_at: datetime | None
+    last_sync_status: str | None
+    last_sync_error: str | None
+
+
+class PageOut(BaseModel):
+    limit: int
+    offset: int
+    total: int
+
+
+class DashboardOut(BaseModel):
+    settings: dict
+    last_sync: LastSyncOut
+    page: PageOut
+    items: list[DashboardRowOut]
+</file>
+
+<file path="services/api/app/schemas/library.py">
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+
+class LibraryOut(BaseModel):
+    id: str
+    name: str
 
     class Config:
         from_attributes = True
@@ -2781,6 +4458,28 @@ class JobStatusOut(BaseModel):
     ended_at: datetime | None
     result: dict | None
     exc_info: str | None
+</file>
+
+<file path="services/api/app/schemas/settings.py">
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel
+
+
+class UserSettingsOut(BaseModel):
+    library_system: str | None
+    preferred_formats: list[str]
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SettingsPatchIn(BaseModel):
+    library_system: str | None = None
+    preferred_formats: list[str] | None = None
 </file>
 
 <file path="services/api/app/services/catalog/factory.py">
@@ -2928,38 +4627,6 @@ class FixtureProvider:
             asin=it.get("asin"),
             raw=it,
         )
-</file>
-
-<file path="services/api/app/services/catalog/overdrive_provider.py">
-from __future__ import annotations
-
-from app.services.catalog.provider import CatalogProvider
-from app.services.catalog.types import ProviderAvailability, ProviderBook
-
-
-class OverDriveProvider:
-    """Phase 3: interface placeholder.
-
-    Phase 5+: implement real OverDrive/Libby calls (and/or scraping) behind env creds.
-    """
-
-    name = "overdrive"
-
-    async def search(
-        self,
-        *,
-        title: str | None,
-        author: str | None,
-        isbn10: str | None,
-        isbn13: str | None,
-        limit: int = 10,
-    ) -> list[ProviderBook]:
-        raise NotImplementedError("OverDriveProvider is implemented in Phase 5+")
-
-    async def availability_bulk(
-        self, *, provider_item_ids: list[str]
-    ) -> list[ProviderAvailability]:
-        raise NotImplementedError("OverDriveProvider is implemented in Phase 5+")
 </file>
 
 <file path="services/api/app/services/catalog/provider.py">
@@ -3270,29 +4937,148 @@ def upsert_availability_snapshot(
     return row
 </file>
 
-<file path="services/api/app/workers/async_utils.py">
+<file path="services/api/app/services/availability_cache.py">
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Awaitable, TypeVar
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
-T = TypeVar("T")
+from app.core.config import settings
+from app.core.redis_client import get_redis
+from app.services.catalog.factory import get_provider
+from app.services.catalog.types import AvailabilityStatus, Format, ProviderAvailability
+from app.workers.async_utils import run_async
 
 
-def run_async(coro: Awaitable[T]) -> T:
-    """Run an async coroutine from a sync context.
+@dataclass(frozen=True)
+class CachedAvailability:
+    availability: ProviderAvailability
+    last_checked_at: datetime
 
-    Uses a fresh event loop to avoid "asyncio.run() cannot be called" edge cases.
+
+def _availability_key(
+    *, provider: str, library_system: str, provider_item_id: str, fmt: str
+) -> str:
+    return f"availability:{provider}:{library_system}:{provider_item_id}:{fmt}"
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def get_availability_cached(
+    *,
+    library_system: str,
+    provider_item_ids: list[str],
+    formats: list[str],
+) -> dict[tuple[str, str], CachedAvailability]:
+    """Return availability per (provider_item_id, format).
+
+    Behavior:
+    - Reads from Redis first.
+    - Only calls provider for cache misses.
+    - Writes misses back to Redis with TTL.
+
+    Returns a map keyed by (provider_item_id, format).
     """
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
-    finally:
-        try:
-            loop.close()
-        finally:
-            asyncio.set_event_loop(None)
+
+    provider = get_provider()
+    provider_name = getattr(provider, "name", "unknown")
+
+    r = get_redis()
+    ttl = int(settings.availability_cache_ttl_secs)
+    wanted = [(pid, fmt) for pid in provider_item_ids for fmt in formats]
+
+    out: dict[tuple[str, str], CachedAvailability] = {}
+    missing_provider_ids: set[str] = set()
+
+    # 1) Try cache
+    if r is not None:
+        pipe = r.pipeline()
+        keys = [
+            _availability_key(
+                provider=provider_name,
+                library_system=library_system,
+                provider_item_id=pid,
+                fmt=fmt,
+            )
+            for (pid, fmt) in wanted
+        ]
+        for k in keys:
+            pipe.get(k)
+        values = pipe.execute()
+
+        for (pid, fmt), raw in zip(wanted, values):
+            if not raw:
+                missing_provider_ids.add(pid)
+                continue
+            try:
+                payload = json.loads(raw)
+                avail = ProviderAvailability.model_validate(payload["availability"])
+                last_checked = datetime.fromisoformat(payload["last_checked_at"])
+                out[(pid, fmt)] = CachedAvailability(
+                    availability=avail, last_checked_at=last_checked
+                )
+            except Exception:
+                missing_provider_ids.add(pid)
+
+    else:
+        missing_provider_ids = set(provider_item_ids)
+
+    # 2) Fetch misses
+    if missing_provider_ids:
+        fetched = run_async(
+            provider.availability_bulk(provider_item_ids=sorted(missing_provider_ids))
+        )
+
+        checked_at = _now_utc()
+
+        # Store provider results
+        for item in fetched:
+            fmt = str(item.format)
+            key = (item.provider_item_id, fmt)
+            out[key] = CachedAvailability(availability=item, last_checked_at=checked_at)
+
+        # Fill any requested (pid, fmt) that provider didn't return
+        for pid in missing_provider_ids:
+            for fmt in formats:
+                if (pid, fmt) in out:
+                    continue
+                out[(pid, fmt)] = CachedAvailability(
+                    availability=ProviderAvailability(
+                        provider=provider_name,
+                        provider_item_id=pid,
+                        format=Format(fmt),
+                        status=AvailabilityStatus.not_owned,
+                        copies_available=None,
+                        copies_total=None,
+                        holds=None,
+                        deep_link=None,
+                    ),
+                    last_checked_at=checked_at,
+                )
+
+        # Write to Redis
+        if r is not None:
+            pipe = r.pipeline()
+            for (pid, fmt), entry in out.items():
+                if pid not in missing_provider_ids:
+                    continue
+                k = _availability_key(
+                    provider=provider_name,
+                    library_system=library_system,
+                    provider_item_id=pid,
+                    fmt=fmt,
+                )
+                payload = {
+                    "availability": entry.availability.model_dump(mode="json"),
+                    "last_checked_at": entry.last_checked_at.isoformat(),
+                }
+                pipe.setex(k, ttl, json.dumps(payload))
+            pipe.execute()
+
+    return out
 </file>
 
 <file path="services/api/app/__init__.py">
@@ -3666,363 +5452,6 @@ indent_size = 4
 
 <file path="SECURITY.md">
 
-</file>
-
-<file path="apps/web/src/app/dashboard/page.tsx">
-"use client";
-
-import { AuthGuard } from "@/components/AuthGuard";
-import { apiFetch } from "@/lib/api";
-import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-
-export default function DashboardPage() {
-  const router = useRouter();
-  const [sources, setSources] = useState<ShelfSource[]>([]);
-  const [items, setItems] = useState<ShelfItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [rssUrl, setRssUrl] = useState("");
-  const [shelfName, setShelfName] = useState("");
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [summary, setSummary] = useState<ImportSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function onLogout() {
-    await apiFetch("/v1/auth/logout", { method: "POST" });
-    router.push("/signin");
-  }
-
-  async function loadData() {
-    setLoading(true);
-    try {
-      const [sourceList, itemList] = await Promise.all([
-        apiFetch<ShelfSource[]>("/v1/shelf-sources"),
-        apiFetch<ShelfItem[]>("/v1/shelf-items?limit=200"),
-      ]);
-      setSources(sourceList);
-      setItems(itemList);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to load shelf data.";
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void loadData();
-  }, []);
-
-  const stats = useMemo(() => {
-    const total = items.length;
-    const withMetadata = items.filter((item) => item.isbn13 || item.isbn10 || item.asin).length;
-    const needsFuzzy = items.filter((item) => item.needs_fuzzy_match).length;
-    return { total, withMetadata, needsFuzzy };
-  }, [items]);
-
-  async function handleRssSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    setSummary(null);
-    setBusy(true);
-
-    try {
-      const result = await apiFetch<ImportSummary>("/v1/shelf-sources/rss", {
-        method: "POST",
-        body: JSON.stringify({ rss_url: rssUrl, shelf_name: shelfName || null }),
-      });
-      setSummary(result);
-      setRssUrl("");
-      setShelfName("");
-      await loadData();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "RSS import failed.";
-      setError(message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleCsvSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!csvFile) return;
-
-    setError(null);
-    setSummary(null);
-    setBusy(true);
-
-    try {
-      const data = new FormData();
-      data.append("file", csvFile);
-      const result = await apiFetch<ImportSummary>("/v1/shelf-sources/csv", {
-        method: "POST",
-        body: data,
-      });
-      setSummary(result);
-      setCsvFile(null);
-      await loadData();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "CSV import failed.";
-      setError(message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const latestItems = items.slice(0, 8);
-
-  return (
-    <AuthGuard>
-      <main className="min-h-screen">
-        <div className="relative overflow-hidden">
-          <div className="pointer-events-none absolute inset-0 -z-10">
-            <div className="absolute right-10 top-12 h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,_rgba(42,157,143,0.2),_rgba(42,157,143,0))] blur-3xl" />
-            <div className="absolute bottom-0 left-1/4 h-80 w-80 rounded-full bg-[radial-gradient(circle_at_center,_rgba(217,93,57,0.2),_rgba(217,93,57,0))] blur-3xl" />
-          </div>
-
-          <div className="mx-auto max-w-6xl space-y-10 px-6 py-10">
-            <header className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.4em] text-black/40">Library snapshot</p>
-                <h1 className="font-display text-3xl sm:text-4xl">Your ShelfSync dashboard</h1>
-              </div>
-              <button
-                className="rounded-full border border-black/20 px-4 py-2 text-xs uppercase tracking-[0.2em]"
-                onClick={onLogout}
-              >
-                Log out
-              </button>
-            </header>
-
-            <section className="grid gap-6 lg:grid-cols-3">
-              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
-                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Titles</p>
-                <p className="mt-3 text-3xl font-semibold">{stats.total}</p>
-                <p className="text-xs text-black/50">imported so far</p>
-              </div>
-              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
-                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Metadata</p>
-                <p className="mt-3 text-3xl font-semibold text-[var(--accent-2)]">
-                  {stats.withMetadata}
-                </p>
-                <p className="text-xs text-black/50">with ISBN or ASIN</p>
-              </div>
-              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
-                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Needs review</p>
-                <p className="mt-3 text-3xl font-semibold text-[var(--accent)]">
-                  {stats.needsFuzzy}
-                </p>
-                <p className="text-xs text-black/50">may need fuzzy match</p>
-              </div>
-            </section>
-
-            <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-              <div className="rounded-3xl border border-black/10 bg-[var(--card)] p-6 shadow-[0_30px_80px_-55px_var(--shadow)]">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.3em] text-black/40">Connect a shelf</p>
-                    <h2 className="font-display text-2xl">Import Goodreads data</h2>
-                  </div>
-                  <p className="text-xs text-black/50">RSS is fastest; CSV is great for exports.</p>
-                </div>
-
-                <div className="mt-6 grid gap-6 lg:grid-cols-2">
-                  <form className="space-y-4" onSubmit={handleRssSubmit}>
-                    <div className="rounded-2xl border border-black/10 bg-white/70 p-5">
-                      <p className="text-sm font-semibold">RSS feed</p>
-                      <p className="text-xs text-black/50">
-                        Paste the Goodreads shelf RSS URL you want to sync.
-                      </p>
-                      <div className="mt-4 space-y-3">
-                        <input
-                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
-                          placeholder="https://www.goodreads.com/shelf/rss?user=..."
-                          value={rssUrl}
-                          onChange={(event) => setRssUrl(event.target.value)}
-                          required
-                        />
-                        <input
-                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
-                          placeholder="Shelf name (optional)"
-                          value={shelfName}
-                          onChange={(event) => setShelfName(event.target.value)}
-                        />
-                        <button
-                          className="w-full rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                          disabled={busy}
-                          type="submit"
-                        >
-                          Connect RSS
-                        </button>
-                      </div>
-                    </div>
-                  </form>
-
-                  <form className="space-y-4" onSubmit={handleCsvSubmit}>
-                    <div className="rounded-2xl border border-black/10 bg-white/70 p-5">
-                      <p className="text-sm font-semibold">CSV export</p>
-                      <p className="text-xs text-black/50">
-                        Upload the Goodreads export.csv from your account settings.
-                      </p>
-                      <div className="mt-4 space-y-3">
-                        <input
-                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
-                          type="file"
-                          accept=".csv"
-                          onChange={(event) => setCsvFile(event.target.files?.[0] || null)}
-                          required
-                        />
-                        <button
-                          className="w-full rounded-xl bg-[var(--accent-2)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                          disabled={busy || !csvFile}
-                          type="submit"
-                        >
-                          Upload CSV
-                        </button>
-                      </div>
-                    </div>
-                  </form>
-                </div>
-
-                {summary ? (
-                  <div className="mt-6 rounded-2xl border border-black/10 bg-white/70 p-4 text-sm">
-                    <p className="font-semibold">Latest import</p>
-                    <p className="text-xs text-black/60">
-                      Created {summary.created}, updated {summary.updated}, skipped {summary.skipped}
-                    </p>
-                    {summary.errors.length ? (
-                      <p className="mt-2 text-xs text-[var(--accent)]">
-                        {summary.errors.slice(0, 2).join("; ")}
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {error ? (
-                  <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
-                    {error}
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="space-y-6">
-                <div className="rounded-3xl border border-black/10 bg-white/70 p-5 shadow-[0_30px_80px_-55px_var(--shadow)]">
-                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Connected sources</p>
-                  <h2 className="font-display text-2xl">Your shelf inputs</h2>
-                  <div className="mt-4 space-y-3 text-sm text-black/60">
-                    {loading ? (
-                      <p>Loading sources...</p>
-                    ) : sources.length ? (
-                      sources.map((source) => (
-                        <div
-                          key={source.id}
-                          className="rounded-2xl border border-black/10 bg-white/80 p-3"
-                        >
-                          <div className="flex items-center justify-between">
-                            <p className="font-semibold text-black">
-                              {source.shelf_name || source.source_type.toUpperCase()}
-                            </p>
-                            <span className="rounded-full bg-black/5 px-3 py-1 text-xs">
-                              {source.source_type}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-xs text-black/50">{source.source_ref}</p>
-                          <p className="mt-2 text-xs text-black/40">
-                            {source.last_imported_at
-                              ? `Last imported ${new Date(source.last_imported_at).toLocaleDateString()}`
-                              : "Not imported yet"}
-                          </p>
-                        </div>
-                      ))
-                    ) : (
-                      <p>No sources yet. Connect RSS or upload CSV to get started.</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-black/10 bg-white/70 p-5 shadow-[0_30px_80px_-55px_var(--shadow)]">
-                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Availability</p>
-                  <h2 className="font-display text-2xl">Next actions</h2>
-                  <div className="mt-4 space-y-3 text-sm text-black/60">
-                    <p>Connect a library adapter to start availability checks.</p>
-                    <div className="rounded-2xl border border-black/10 bg-white/80 p-4 text-xs uppercase tracking-[0.25em] text-black/40">
-                      Library adapters coming next
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-[0_30px_80px_-55px_var(--shadow)]">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Latest imports</p>
-                  <h2 className="font-display text-2xl">Recently synced titles</h2>
-                </div>
-                <span className="text-xs text-black/40">Top 8</span>
-              </div>
-              <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {loading ? (
-                  <p className="text-sm text-black/60">Loading items...</p>
-                ) : latestItems.length ? (
-                  latestItems.map((item) => (
-                    <div key={item.id} className="rounded-2xl border border-black/10 bg-white/80 p-4">
-                      <p className="text-sm font-semibold text-black">{item.title}</p>
-                      <p className="text-xs text-black/50">{item.author}</p>
-                      <div className="mt-3 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.2em] text-black/40">
-                        {item.isbn13 || item.isbn10 || item.asin ? (
-                          <span className="rounded-full bg-black/5 px-2 py-1">metadata</span>
-                        ) : (
-                          <span className="rounded-full bg-black/5 px-2 py-1">no id</span>
-                        )}
-                        {item.needs_fuzzy_match ? (
-                          <span className="rounded-full bg-black/5 px-2 py-1">fuzzy</span>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-black/60">
-                    No items yet. Import a shelf to see your list here.
-                  </p>
-                )}
-              </div>
-            </section>
-          </div>
-        </div>
-      </main>
-    </AuthGuard>
-  );
-}
-
-type ShelfSource = {
-  id: string;
-  source_type: string;
-  source_ref: string;
-  shelf_name: string | null;
-  created_at: string;
-  last_imported_at: string | null;
-};
-
-type ShelfItem = {
-  id: string;
-  title: string;
-  author: string;
-  isbn13: string | null;
-  isbn10: string | null;
-  asin: string | null;
-  goodreads_book_id: string | null;
-  normalized_key: string;
-  needs_fuzzy_match: boolean;
-};
-
-type ImportSummary = {
-  created: number;
-  updated: number;
-  skipped: number;
-  errors: string[];
-};
 </file>
 
 <file path="apps/web/src/app/globals.css">
@@ -4413,6 +5842,38 @@ def downgrade() -> None:
     op.drop_column("shelf_items", "asin")
     op.drop_column("shelf_items", "isbn10")
     op.drop_column("shelf_items", "isbn13")
+    # ### end Alembic commands ###
+</file>
+
+<file path="services/api/alembic/versions/bedca43b8c03_phase3_catalog_matching.py">
+"""phase3 catalog matching
+
+Revision ID: bedca43b8c03
+Revises: b2c2190162bb
+Create Date: 2025-12-23 19:50:47.846892
+
+"""
+
+from typing import Sequence, Union
+
+# revision identifiers, used by Alembic.
+revision: str = "bedca43b8c03"
+down_revision: Union[str, Sequence[str], None] = "b2c2190162bb"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    pass
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    pass
     # ### end Alembic commands ###
 </file>
 
@@ -5066,6 +6527,7 @@ from app.models.catalog_match import CatalogMatch
 from app.models.library import Library
 from app.models.shelf_item import ShelfItem
 from app.models.shelf_source import ShelfSource
+from app.models.sync_run import SyncRun
 from app.models.user import User
 from app.models.user_settings import UserSettings
 
@@ -5079,7 +6541,47 @@ __all__ = [
     "CatalogItem",
     "CatalogMatch",
     "AvailabilitySnapshot",
+    "SyncRun",
 ]
+</file>
+
+<file path="services/api/app/models/availability_snapshot.py">
+from __future__ import annotations
+
+from datetime import datetime
+from uuid import uuid4
+
+from app.models.base import Base
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+
+class AvailabilitySnapshot(Base):
+    __tablename__ = "availability_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    catalog_item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("catalog_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    format: Mapped[str] = mapped_column(String(20), nullable=False)  # ebook | audiobook
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # available | hold | not_owned
+
+    copies_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    copies_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    holds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    deep_link: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "catalog_item_id", "format", name="uq_avail_user_item_format"),
+    )
 </file>
 
 <file path="services/api/app/schemas/shelf.py">
@@ -5135,6 +6637,37 @@ class RssConnectIn(BaseModel):
     rss_url: str
     shelf: str | None = "to-read"
     sync_now: bool = True
+</file>
+
+<file path="services/api/app/services/catalog/overdrive_provider.py">
+from __future__ import annotations
+
+from app.services.catalog.types import ProviderAvailability, ProviderBook
+
+
+class OverDriveProvider:
+    """Phase 3: interface placeholder.
+
+    Phase 5+: implement real OverDrive/Libby calls (and/or scraping) behind env creds.
+    """
+
+    name = "overdrive"
+
+    async def search(
+        self,
+        *,
+        title: str | None,
+        author: str | None,
+        isbn10: str | None,
+        isbn13: str | None,
+        limit: int = 10,
+    ) -> list[ProviderBook]:
+        raise NotImplementedError("OverDriveProvider is implemented in Phase 5+")
+
+    async def availability_bulk(
+        self, *, provider_item_ids: list[str]
+    ) -> list[ProviderAvailability]:
+        raise NotImplementedError("OverDriveProvider is implemented in Phase 5+")
 </file>
 
 <file path="services/api/app/services/goodreads_csv.py">
@@ -5571,16 +7104,54 @@ def upsert_shelf_items(
     return summary
 </file>
 
+<file path="services/api/app/workers/async_utils.py">
+from __future__ import annotations
+
+import asyncio
+from typing import Awaitable, TypeVar
+
+T = TypeVar("T")
+
+
+def run_async(coro: Awaitable[T]) -> T:
+    """Run an async coroutine from a sync context.
+
+    Uses a fresh event loop to avoid "asyncio.run() cannot be called" edge cases.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            loop.close()
+        finally:
+            asyncio.set_event_loop(None)
+</file>
+
 <file path="services/api/app/workers/jobs.py">
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
+from uuid import UUID
 
+from app.core.config import settings
+from app.crud.availability import upsert_snapshots
+from app.crud.shelf_items import list_shelf_items_for_user
+from app.crud.sync_runs import (
+    get_sync_run,
+    set_sync_run_failed,
+    set_sync_run_running,
+    set_sync_run_succeeded,
+    update_progress,
+)
 from app.db.session import SessionLocal
 from app.models.shelf_item import ShelfItem
 from app.models.shelf_source import ShelfSource
-from app.services.catalog.factory import get_provider
+from app.providers.factory import get_provider as get_availability_provider
+from app.services.catalog.factory import get_provider as get_catalog_provider
 from app.services.goodreads_rss import fetch_rss, parse_goodreads_rss
 from app.services.matching.matcher import match_shelf_item
 from app.services.matching.persist import (
@@ -5590,7 +7161,11 @@ from app.services.matching.persist import (
 )
 from app.services.shelf_import import upsert_shelf_items
 from app.workers.async_utils import run_async
+from app.workers.events import publish_sync_event
 from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 
 def sync_goodreads_rss(source_id: str) -> dict:
@@ -5659,7 +7234,7 @@ def refresh_matching_for_user(user_id: str) -> dict:
     Called by RQ worker.
     """
 
-    provider = get_provider()
+    provider = get_catalog_provider()
 
     with SessionLocal() as db:
         shelf_items = (
@@ -5714,19 +7289,101 @@ def refresh_matching_for_user(user_id: str) -> dict:
             "matched": matched,
             "unmatched": unmatched,
         }
+
+
+def availability_refresh_job(*, sync_run_id: str) -> None:
+    run_uuid = UUID(sync_run_id)
+
+    db: Session = SessionLocal()
+    try:
+        run = get_sync_run(db, run_id=run_uuid)
+        if not run:
+            logger.warning("sync_run_not_found", extra={"sync_run_id": sync_run_id})
+            return
+
+        # Correlation ID = sync_run_id
+        extra = {
+            "correlation_id": sync_run_id,
+            "sync_run_id": sync_run_id,
+            "user_id": str(run.user_id),
+        }
+
+        items = list_shelf_items_for_user(db, user_id=run.user_id)
+        total = len(items)
+        set_sync_run_running(db, run=run, total=total)
+        publish_sync_event(
+            user_id=str(run.user_id), run_id=sync_run_id, type_="started", payload={"total": total}
+        )
+
+        provider = get_availability_provider(
+            db, user_id=run.user_id
+        )  # FixtureProvider or real provider
+
+        processed = 0
+        batch_size = int(getattr(settings, "sync_batch_size", 25))
+
+        for i in range(0, total, batch_size):
+            batch = items[i : i + batch_size]
+
+            # Provider call (may raise)
+            results = provider.availability_bulk(batch)
+            upsert_snapshots(db, user_id=run.user_id, results=results)
+
+            processed += len(batch)
+            update_progress(db, run=run, current=processed)
+
+            publish_sync_event(
+                user_id=str(run.user_id),
+                run_id=sync_run_id,
+                type_="progress",
+                payload={"current": processed, "total": total},
+            )
+
+        set_sync_run_succeeded(db, run=run)
+        publish_sync_event(
+            user_id=str(run.user_id),
+            run_id=sync_run_id,
+            type_="succeeded",
+            payload={"total": total},
+        )
+        logger.info("sync_run_succeeded", extra=extra)
+
+    except Exception as e:
+        # Try to mark failed if run exists
+        try:
+            run = get_sync_run(db, run_id=run_uuid)
+            if run:
+                set_sync_run_failed(db, run=run, message=str(e))
+                publish_sync_event(
+                    user_id=str(run.user_id),
+                    run_id=sync_run_id,
+                    type_="failed",
+                    payload={"message": str(e)},
+                )
+        except Exception:
+            logger.exception("sync_run_failed_marking_failed", extra={"sync_run_id": sync_run_id})
+
+        logger.exception(
+            "sync_run_failed", extra={"sync_run_id": sync_run_id, "correlation_id": sync_run_id}
+        )
+        raise
+
+    finally:
+        db.close()
 </file>
 
 <file path="services/api/app/workers/queue.py">
 from __future__ import annotations
 
-import redis
-from app.core.config import settings
+from app.workers.redis_conn import get_redis_connection
 from rq import Queue
+
+QUEUE_NAME = "shelfsync"
 
 
 def get_queue() -> Queue:
-    conn = redis.from_url(settings.redis_url)
-    return Queue("default", connection=conn)
+    conn = get_redis_connection()
+    return Queue(QUEUE_NAME, connection=conn)
 </file>
 
 <file path="services/api/tests/test_goodreads_csv_parser.py">
@@ -5831,35 +7488,6 @@ def test_upsert_idempotent():
     assert s2.updated == 1
 </file>
 
-<file path="services/api/.env.example">
-ENV=local
-API_NAME=ShelfSyncAPI
-
-DATABASE_URL=postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync
-REDIS_URL=redis://localhost:6379/0
-OTEL_ENABLED=false
-
-GOODREADS_BASE_URL=http://localhost:4010
-
-# Demo toggles (reserved for local/dev flows)
-DEMO_LOGIN_ENABLED=true
-DEMO_SEED_ENABLED=false
-
-# pydantic-settings can parse JSON lists; keep it simple in dev
-CORS_ORIGINS=["http://localhost:3000"]
-
-AUTH_SECRET_KEY=CHANGE_ME_IN_PROD
-AUTH_ACCESS_TOKEN_TTL_MINUTES=10080
-AUTH_COOKIE_NAME=access_token
-AUTH_COOKIE_SECURE=false
-AUTH_COOKIE_SAMESITE=lax
-GOODREADS_FETCH_TIMEOUT_SECS=10
-USER_AGENT=ShelfSync/0.1
-
-CATALOG_PROVIDER=fixture
-FIXTURE_CATALOG_PATH=app/fixtures/catalog_fixture.json
-</file>
-
 <file path=".gitignore">
 # Python
 __pycache__/
@@ -5905,6 +7533,311 @@ api-alembic:
 	cd services/api && ./bin/alembic $(ARGS)
 </file>
 
+<file path="apps/web/src/app/dashboard/page.tsx">
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+
+import { AuthGuard } from "@/components/AuthGuard";
+import { apiFetch } from "@/lib/api";
+
+type DashboardResponse = {
+  settings: { library_system: string | null; preferred_formats: string[]; updated_at: string };
+  last_sync: {
+    source_type: string | null;
+    source_id: string | null;
+    last_synced_at: string | null;
+    last_sync_status: string | null;
+    last_sync_error: string | null;
+  };
+  page: { limit: number; offset: number; total: number };
+  items: DashboardRow[];
+};
+
+type DashboardRow = {
+  shelf_item_id: string;
+  title: string;
+  author: string | null;
+  shelf: string | null;
+  needs_fuzzy_match: boolean;
+  match: {
+    catalog_item_id: string;
+    provider: string;
+    provider_item_id: string;
+    method: string;
+    confidence: number;
+  } | null;
+  availability: Availability[];
+};
+
+type Availability = {
+  format: string;
+  status: string;
+  copies_available: number | null;
+  copies_total: number | null;
+  holds: number | null;
+  deep_link: string | null;
+  last_checked_at: string;
+};
+
+function statusLabel(status: string) {
+  if (status === "available") return "Available";
+  if (status === "hold") return "On hold";
+  if (status === "not_owned") return "Not owned";
+  return status;
+}
+
+function pillClass(status: string) {
+  if (status === "available") return "bg-emerald-100 text-emerald-900";
+  if (status === "hold") return "bg-amber-100 text-amber-900";
+  if (status === "not_owned") return "bg-slate-100 text-slate-900";
+  return "bg-slate-100 text-slate-900";
+}
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const [data, setData] = useState<DashboardResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sort, setSort] = useState<string>("title");
+
+  async function load() {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await apiFetch<DashboardResponse>("/v1/dashboard?limit=200&offset=0");
+      setData(res);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load dashboard.";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const items = useMemo(() => {
+    if (!data) return [];
+    let rows = data.items;
+
+    const q = query.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((r) => {
+        const hay = `${r.title} ${r.author ?? ""}`.toLowerCase();
+        return hay.includes(q);
+      });
+    }
+
+    if (statusFilter !== "all") {
+      rows = rows.filter((r) => {
+        if (statusFilter === "unmatched") return !r.match;
+        return r.availability.some((a) => a.status === statusFilter);
+      });
+    }
+
+    const sortKey = sort;
+    rows = [...rows].sort((a, b) => {
+      if (sortKey === "title") return a.title.localeCompare(b.title);
+      if (sortKey === "confidence") return (b.match?.confidence ?? -1) - (a.match?.confidence ?? -1);
+      if (sortKey === "availability") {
+        const score = (r: DashboardRow) => {
+          if (!r.match) return -2;
+          if (r.availability.some((x) => x.status === "available")) return 2;
+          if (r.availability.some((x) => x.status === "hold")) return 1;
+          return 0;
+        };
+        return score(b) - score(a);
+      }
+      return 0;
+    });
+
+    return rows;
+  }, [data, query, statusFilter, sort]);
+
+  const settings = data?.settings;
+  const lastSync = data?.last_sync;
+
+  return (
+    <AuthGuard>
+      <main className="min-h-screen px-6 py-10">
+        <div className="mx-auto flex max-w-6xl flex-col gap-8">
+          <header className="flex flex-col gap-3 rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h1 className="font-display text-3xl tracking-tight">Dashboard</h1>
+                <p className="text-sm text-black/60">Your shelf, matched to your library.</p>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <Link className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5" href="/settings">
+                  Preferences
+                </Link>
+                <Link
+                  className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5"
+                  href="/settings/goodreads"
+                >
+                  Import/Connect
+                </Link>
+                <button
+                  onClick={load}
+                  className="rounded-full bg-black px-4 py-2 text-white hover:bg-black/90"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {settings?.library_system ? (
+              <div className="text-sm text-black/70">
+                <span className="font-medium">Library:</span> {settings.library_system} ·{" "}
+                <span className="font-medium">Formats:</span> {settings.preferred_formats.join(", ") || "ebook"}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
+                Pick a library in <Link className="underline" href="/settings">Preferences</Link> to enable availability.
+              </div>
+            )}
+
+            {lastSync?.last_synced_at ? (
+              <div className="text-xs text-black/60">
+                Last shelf sync: {new Date(lastSync.last_synced_at).toLocaleString()} ({lastSync.source_type})
+                {lastSync.last_sync_status === "error" ? ` · error: ${lastSync.last_sync_error}` : ""}
+              </div>
+            ) : (
+              <div className="text-xs text-black/60">No shelf connected yet. Use Import/Connect.</div>
+            )}
+          </header>
+
+          <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search title/author…"
+                className="w-full max-w-sm rounded-2xl border border-black/10 bg-white px-4 py-2 text-sm"
+              />
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm"
+              >
+                <option value="all">All</option>
+                <option value="available">Available</option>
+                <option value="hold">Hold</option>
+                <option value="not_owned">Not owned</option>
+                <option value="unmatched">Unmatched</option>
+              </select>
+
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value)}
+                className="rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm"
+              >
+                <option value="title">Sort: Title</option>
+                <option value="availability">Sort: Availability</option>
+                <option value="confidence">Sort: Match confidence</option>
+              </select>
+            </div>
+
+            {loading ? <div className="text-sm text-black/60">Loading…</div> : null}
+            {error ? (
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+                {error.includes("429") ? "Too many requests. Please try again in a moment." : error}
+              </div>
+            ) : null}
+
+            {!loading && !error && items.length === 0 ? (
+              <div className="text-sm text-black/60">No items yet. Import a shelf to get started.</div>
+            ) : null}
+
+            {!loading && !error && items.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full table-auto border-collapse text-left text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-black/50">
+                    <tr>
+                      <th className="py-3 pr-4">Book</th>
+                      <th className="py-3 pr-4">Shelf</th>
+                      <th className="py-3 pr-4">Match</th>
+                      <th className="py-3 pr-4">Availability</th>
+                      <th className="py-3"> </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((row) => (
+                      <tr key={row.shelf_item_id} className="border-t border-black/5">
+                        <td className="py-3 pr-4">
+                          <div className="font-medium">{row.title}</div>
+                          <div className="text-xs text-black/60">{row.author ?? "Unknown author"}</div>
+                        </td>
+                        <td className="py-3 pr-4 text-xs text-black/70">{row.shelf ?? "—"}</td>
+                        <td className="py-3 pr-4 text-xs">
+                          {row.match ? (
+                            <span>
+                              {Math.round(row.match.confidence * 100)}% · {row.match.method}
+                            </span>
+                          ) : (
+                            <span className="text-black/50">Unmatched</span>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <div className="flex flex-wrap gap-2">
+                            {row.match ? (
+                              row.availability.length ? (
+                                row.availability.map((a) => (
+                                  <span
+                                    key={`${row.shelf_item_id}:${a.format}`}
+                                    className={`rounded-full px-3 py-1 text-xs ${pillClass(a.status)}`}
+                                    title={`${a.format} · ${statusLabel(a.status)}`}
+                                  >
+                                    {a.format}: {statusLabel(a.status)}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-900">
+                                  {settings?.library_system ? "Checking…" : "Select library"}
+                                </span>
+                              )
+                            ) : (
+                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-900">
+                                Run matching
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3">
+                          <button
+                            className="rounded-full border border-black/10 px-4 py-2 text-xs hover:bg-black/5"
+                            onClick={() => router.push(`/books/${row.shelf_item_id}`)}
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </section>
+
+          <footer className="text-xs text-black/50">
+            Tip: repeated refreshes within the cache TTL should not trigger provider calls.
+          </footer>
+        </div>
+      </main>
+    </AuthGuard>
+  );
+}
+</file>
+
 <file path="apps/web/tsconfig.json">
 {
   "compilerOptions": {
@@ -5948,106 +7881,6 @@ api-alembic:
     "node_modules"
   ]
 }
-</file>
-
-<file path="services/api/app/core/config.py">
-from __future__ import annotations
-
-import importlib
-from typing import Any, Literal
-
-from pydantic import Field
-
-PydanticBaseSettings: Any
-PydanticSettingsConfigDict: Any
-_BaseSettings: Any
-_SettingsConfigDict: Any
-
-try:
-    pydantic_settings = importlib.import_module("pydantic_settings")
-    _BaseSettings = pydantic_settings.BaseSettings
-    _SettingsConfigDict = pydantic_settings.SettingsConfigDict
-    _USE_PYDANTIC_SETTINGS = True
-except ModuleNotFoundError:  # pragma: no cover - runtime fallback
-    try:
-        pydantic = importlib.import_module("pydantic")
-    except Exception as exc:  # pragma: no cover - defensive
-        raise ModuleNotFoundError(
-            "pydantic-settings is required with pydantic v2; install it or downgrade to pydantic v1."
-        ) from exc
-
-    _BaseSettings = pydantic.BaseSettings
-    _SettingsConfigDict = None
-    _USE_PYDANTIC_SETTINGS = False
-
-PydanticBaseSettings = _BaseSettings
-PydanticSettingsConfigDict = _SettingsConfigDict
-
-
-class Settings(PydanticBaseSettings):
-    if _USE_PYDANTIC_SETTINGS:
-        model_config = PydanticSettingsConfigDict(
-            env_file=".env",
-            env_file_encoding="utf-8",
-            extra="ignore",
-            case_sensitive=False,
-        )
-    else:
-
-        class Config:
-            env_file = ".env"
-            env_file_encoding = "utf-8"
-            extra = "ignore"
-            case_sensitive = False
-
-    # Environment
-    env: str = Field(default="local", validation_alias="ENV")
-
-    # API
-    api_name: str = Field(default="ShelfSync API", validation_alias="API_NAME")
-
-    # Observability
-    otel_enabled: bool = Field(default=False, validation_alias="OTEL_ENABLED")
-
-    # Backing services
-    database_url: str = Field(
-        default="postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync",
-        validation_alias="DATABASE_URL",
-    )
-    redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
-    goodreads_base_url: str | None = Field(default=None, validation_alias="GOODREADS_BASE_URL")
-    goodreads_fetch_timeout_secs: int = Field(
-        default=10, validation_alias="GOODREADS_FETCH_TIMEOUT_SECS"
-    )
-    user_agent: str = Field(default="ShelfSync/0.1", validation_alias="USER_AGENT")
-
-    # CORS
-    cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3000"], validation_alias="CORS_ORIGINS"
-    )
-
-    # Auth
-    auth_secret_key: str = Field(default="CHANGE_ME_IN_PROD", validation_alias="AUTH_SECRET_KEY")
-    auth_access_token_ttl_minutes: int = Field(
-        default=60 * 24 * 7, validation_alias="AUTH_ACCESS_TOKEN_TTL_MINUTES"
-    )
-
-    # Cookies
-    auth_cookie_name: str = Field(default="access_token", validation_alias="AUTH_COOKIE_NAME")
-    auth_cookie_secure: bool = Field(default=False, validation_alias="AUTH_COOKIE_SECURE")
-    auth_cookie_samesite: Literal["lax", "strict", "none"] = Field(
-        default="lax",
-        validation_alias="AUTH_COOKIE_SAMESITE",
-    )
-    # Catalog provider
-    catalog_provider: str = Field(default="fixture", validation_alias="CATALOG_PROVIDER")
-    fixture_catalog_path: str = Field(
-        default="app/fixtures/catalog_fixture.json",
-        validation_alias="FIXTURE_CATALOG_PATH",
-    )
-
-
-settings = Settings()
 </file>
 
 <file path="services/api/app/models/shelf_item.py">
@@ -6239,6 +8072,39 @@ def test_login_auto_creates_demo_user_with_simple_password(client):
     assert resp.json()["email"] == "demo@example.com"
 </file>
 
+<file path="services/api/.env.example">
+ENV=local
+API_NAME=ShelfSyncAPI
+
+DATABASE_URL=postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync
+REDIS_URL=redis://localhost:6379/0
+OTEL_ENABLED=false
+
+GOODREADS_BASE_URL=http://localhost:4010
+
+# Demo toggles (reserved for local/dev flows)
+DEMO_LOGIN_ENABLED=true
+DEMO_SEED_ENABLED=false
+
+# pydantic-settings can parse JSON lists; keep it simple in dev
+CORS_ORIGINS=["http://localhost:3000"]
+
+AUTH_SECRET_KEY=CHANGE_ME_IN_PROD
+AUTH_ACCESS_TOKEN_TTL_MINUTES=10080
+AUTH_COOKIE_NAME=access_token
+AUTH_COOKIE_SECURE=false
+AUTH_COOKIE_SAMESITE=lax
+GOODREADS_FETCH_TIMEOUT_SECS=10
+USER_AGENT=ShelfSync/0.1
+
+CATALOG_PROVIDER=fixture
+FIXTURE_CATALOG_PATH=app/fixtures/catalog_fixture.json
+AVAILABILITY_CACHE_TTL_SECS=300
+RATE_LIMIT_WINDOW_SECS=60
+RATE_LIMIT_DASHBOARD_PER_WINDOW=30
+RATE_LIMIT_BOOKS_PER_WINDOW=60
+</file>
+
 <file path="services/api/requirements.txt">
 fastapi
 uvicorn[standard]
@@ -6285,6 +8151,116 @@ asyncio_mode = "auto"
 pythonpath = ["services/api"]
 </file>
 
+<file path="services/api/app/core/config.py">
+from __future__ import annotations
+
+import importlib
+from typing import Any, Literal
+
+from pydantic import Field
+
+PydanticBaseSettings: Any
+PydanticSettingsConfigDict: Any
+_BaseSettings: Any
+_SettingsConfigDict: Any
+
+try:
+    pydantic_settings = importlib.import_module("pydantic_settings")
+    _BaseSettings = pydantic_settings.BaseSettings
+    _SettingsConfigDict = pydantic_settings.SettingsConfigDict
+    _USE_PYDANTIC_SETTINGS = True
+except ModuleNotFoundError:  # pragma: no cover - runtime fallback
+    try:
+        pydantic = importlib.import_module("pydantic")
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ModuleNotFoundError(
+            "pydantic-settings is required with pydantic v2; install it or downgrade to pydantic v1."
+        ) from exc
+
+    _BaseSettings = pydantic.BaseSettings
+    _SettingsConfigDict = None
+    _USE_PYDANTIC_SETTINGS = False
+
+PydanticBaseSettings = _BaseSettings
+PydanticSettingsConfigDict = _SettingsConfigDict
+
+
+class Settings(PydanticBaseSettings):
+    if _USE_PYDANTIC_SETTINGS:
+        model_config = PydanticSettingsConfigDict(
+            env_file=".env",
+            env_file_encoding="utf-8",
+            extra="ignore",
+            case_sensitive=False,
+        )
+    else:
+
+        class Config:
+            env_file = ".env"
+            env_file_encoding = "utf-8"
+            extra = "ignore"
+            case_sensitive = False
+
+    # Environment
+    env: str = Field(default="local", validation_alias="ENV")
+
+    # API
+    api_name: str = Field(default="ShelfSync API", validation_alias="API_NAME")
+
+    # Observability
+    otel_enabled: bool = Field(default=False, validation_alias="OTEL_ENABLED")
+
+    # Backing services
+    database_url: str = Field(
+        default="postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync",
+        validation_alias="DATABASE_URL",
+    )
+    redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
+    goodreads_base_url: str | None = Field(default=None, validation_alias="GOODREADS_BASE_URL")
+    goodreads_fetch_timeout_secs: int = Field(
+        default=10, validation_alias="GOODREADS_FETCH_TIMEOUT_SECS"
+    )
+    user_agent: str = Field(default="ShelfSync/0.1", validation_alias="USER_AGENT")
+
+    # CORS
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:3000"], validation_alias="CORS_ORIGINS"
+    )
+
+    # Auth
+    auth_secret_key: str = Field(default="CHANGE_ME_IN_PROD", validation_alias="AUTH_SECRET_KEY")
+    auth_access_token_ttl_minutes: int = Field(
+        default=60 * 24 * 7, validation_alias="AUTH_ACCESS_TOKEN_TTL_MINUTES"
+    )
+
+    # Cookies
+    auth_cookie_name: str = Field(default="access_token", validation_alias="AUTH_COOKIE_NAME")
+    auth_cookie_secure: bool = Field(default=False, validation_alias="AUTH_COOKIE_SECURE")
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        default="lax",
+        validation_alias="AUTH_COOKIE_SAMESITE",
+    )
+    # Catalog provider
+    catalog_provider: str = Field(default="fixture", validation_alias="CATALOG_PROVIDER")
+    fixture_catalog_path: str = Field(
+        default="app/fixtures/catalog_fixture.json",
+        validation_alias="FIXTURE_CATALOG_PATH",
+    )
+    availability_cache_ttl_secs: int = Field(
+        default=300, validation_alias="AVAILABILITY_CACHE_TTL_SECS"
+    )
+    rate_limit_window_secs: int = Field(default=60, validation_alias="RATE_LIMIT_WINDOW_SECS")
+    rate_limit_dashboard_per_window: int = Field(
+        default=30, validation_alias="RATE_LIMIT_DASHBOARD_PER_WINDOW"
+    )
+    rate_limit_books_per_window: int = Field(
+        default=60, validation_alias="RATE_LIMIT_BOOKS_PER_WINDOW"
+    )
+
+
+settings = Settings()
+</file>
+
 <file path="README.md">
 # ShelfSync
 
@@ -6303,6 +8279,22 @@ ShelfSync links your Goodreads shelves to your local library catalog (Libby/Over
 - Docker
 - Node.js 24
 - Python 3.14
+
+### Backing services
+
+Alembic, the API, and many dev workflows rely on Postgres (plus Redis and the Goodreads mock when those APIs are called). Start the backing services before running database commands or starting the API.
+
+```bash
+make infra-up
+# or: docker compose -f infra/docker-compose.yml up -d
+```
+
+When done, tear them down to free resources:
+
+```bash
+make infra-down
+# or: docker compose -f infra/docker-compose.yml down
+```
 
 ### First-time setup
 
@@ -6326,6 +8318,8 @@ pytest
 ```
 
 #### Migrations
+
+Make sure the backing services described above are running before applying migrations.
 
 Use the repo wrapper so Alembic runs with the `services/api/.venv` interpreter:
 If `alembic` resolves to `/opt/homebrew/bin/alembic`, you're using the Homebrew
@@ -6356,12 +8350,17 @@ make api-alembic ARGS="revision --autogenerate -m 'phase1 init schema'"
 import logging
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.books import router as books_router
+from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.health import router as health_router
+from app.api.routes.libraries import router as libraries_router
 from app.api.routes.matching import router as matching_router
+from app.api.routes.settings import router as settings_router
 from app.api.routes.shelf_items import router as shelf_items_router
 from app.api.routes.shelf_sources import router as shelf_sources_router
 from app.core.config import settings
-from app.core.otel import maybe_enable_otel
+from app.core.otel import init_otel, maybe_enable_otel
+from app.middleware.request_id import RequestIdMiddleware
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6385,6 +8384,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestIdMiddleware)
 
 # Unversioned health
 app.include_router(health_router)
@@ -6394,8 +8394,13 @@ v1 = APIRouter(prefix="/v1")
 v1.include_router(auth_router)
 v1.include_router(shelf_sources_router)
 v1.include_router(shelf_items_router)
+v1.include_router(settings_router)
+v1.include_router(libraries_router)
+v1.include_router(dashboard_router)
+v1.include_router(books_router)
 app.include_router(v1)
 app.include_router(matching_router)
+init_otel(app)
 </file>
 
 </files>
