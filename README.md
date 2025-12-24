@@ -16,6 +16,22 @@ ShelfSync links your Goodreads shelves to your local library catalog (Libby/Over
 - Node.js 24
 - Python 3.14
 
+### Backing services
+
+Alembic, the API, and many dev workflows rely on Postgres (plus Redis and the Goodreads mock when those APIs are called). Start the backing services before running database commands or starting the API.
+
+```bash
+make infra-up
+# or: docker compose -f infra/docker-compose.yml up -d
+```
+
+When done, tear them down to free resources:
+
+```bash
+make infra-down
+# or: docker compose -f infra/docker-compose.yml down
+```
+
 ### First-time setup
 
 #### Local env vars
@@ -38,6 +54,8 @@ pytest
 ```
 
 #### Migrations
+
+Make sure the backing services described above are running before applying migrations.
 
 Use the repo wrapper so Alembic runs with the `services/api/.venv` interpreter:
 If `alembic` resolves to `/opt/homebrew/bin/alembic`, you're using the Homebrew

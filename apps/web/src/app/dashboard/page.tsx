@@ -1,354 +1,302 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+
 import { AuthGuard } from "@/components/AuthGuard";
 import { apiFetch } from "@/lib/api";
-import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+
+type DashboardResponse = {
+  settings: { library_system: string | null; preferred_formats: string[]; updated_at: string };
+  last_sync: {
+    source_type: string | null;
+    source_id: string | null;
+    last_synced_at: string | null;
+    last_sync_status: string | null;
+    last_sync_error: string | null;
+  };
+  page: { limit: number; offset: number; total: number };
+  items: DashboardRow[];
+};
+
+type DashboardRow = {
+  shelf_item_id: string;
+  title: string;
+  author: string | null;
+  shelf: string | null;
+  needs_fuzzy_match: boolean;
+  match: {
+    catalog_item_id: string;
+    provider: string;
+    provider_item_id: string;
+    method: string;
+    confidence: number;
+  } | null;
+  availability: Availability[];
+};
+
+type Availability = {
+  format: string;
+  status: string;
+  copies_available: number | null;
+  copies_total: number | null;
+  holds: number | null;
+  deep_link: string | null;
+  last_checked_at: string;
+};
+
+function statusLabel(status: string) {
+  if (status === "available") return "Available";
+  if (status === "hold") return "On hold";
+  if (status === "not_owned") return "Not owned";
+  return status;
+}
+
+function pillClass(status: string) {
+  if (status === "available") return "bg-emerald-100 text-emerald-900";
+  if (status === "hold") return "bg-amber-100 text-amber-900";
+  if (status === "not_owned") return "bg-slate-100 text-slate-900";
+  return "bg-slate-100 text-slate-900";
+}
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [sources, setSources] = useState<ShelfSource[]>([]);
-  const [items, setItems] = useState<ShelfItem[]>([]);
+  const [data, setData] = useState<DashboardResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [rssUrl, setRssUrl] = useState("");
-  const [shelfName, setShelfName] = useState("");
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function onLogout() {
-    await apiFetch("/v1/auth/logout", { method: "POST" });
-    router.push("/signin");
-  }
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sort, setSort] = useState<string>("title");
 
-  async function loadData() {
+  async function load() {
+    setError(null);
     setLoading(true);
     try {
-      const [sourceList, itemList] = await Promise.all([
-        apiFetch<ShelfSource[]>("/v1/shelf-sources"),
-        apiFetch<ShelfItem[]>("/v1/shelf-items?limit=200"),
-      ]);
-      setSources(sourceList);
-      setItems(itemList);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to load shelf data.";
-      setError(message);
+      const res = await apiFetch<DashboardResponse>("/v1/dashboard?limit=200&offset=0");
+      setData(res);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load dashboard.";
+      setError(msg);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    void loadData();
+    load();
   }, []);
 
-  const stats = useMemo(() => {
-    const total = items.length;
-    const withMetadata = items.filter((item) => item.isbn13 || item.isbn10 || item.asin).length;
-    const needsFuzzy = items.filter((item) => item.needs_fuzzy_match).length;
-    return { total, withMetadata, needsFuzzy };
-  }, [items]);
+  const items = useMemo(() => {
+    if (!data) return [];
+    let rows = data.items;
 
-  async function handleRssSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    setSummary(null);
-    setBusy(true);
-
-    try {
-      const result = await apiFetch<ImportSummary>("/v1/shelf-sources/rss", {
-        method: "POST",
-        body: JSON.stringify({ rss_url: rssUrl, shelf_name: shelfName || null }),
+    const q = query.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((r) => {
+        const hay = `${r.title} ${r.author ?? ""}`.toLowerCase();
+        return hay.includes(q);
       });
-      setSummary(result);
-      setRssUrl("");
-      setShelfName("");
-      await loadData();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "RSS import failed.";
-      setError(message);
-    } finally {
-      setBusy(false);
     }
-  }
 
-  async function handleCsvSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!csvFile) return;
-
-    setError(null);
-    setSummary(null);
-    setBusy(true);
-
-    try {
-      const data = new FormData();
-      data.append("file", csvFile);
-      const result = await apiFetch<ImportSummary>("/v1/shelf-sources/csv", {
-        method: "POST",
-        body: data,
+    if (statusFilter !== "all") {
+      rows = rows.filter((r) => {
+        if (statusFilter === "unmatched") return !r.match;
+        return r.availability.some((a) => a.status === statusFilter);
       });
-      setSummary(result);
-      setCsvFile(null);
-      await loadData();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "CSV import failed.";
-      setError(message);
-    } finally {
-      setBusy(false);
     }
-  }
 
-  const latestItems = items.slice(0, 8);
+    const sortKey = sort;
+    rows = [...rows].sort((a, b) => {
+      if (sortKey === "title") return a.title.localeCompare(b.title);
+      if (sortKey === "confidence") return (b.match?.confidence ?? -1) - (a.match?.confidence ?? -1);
+      if (sortKey === "availability") {
+        const score = (r: DashboardRow) => {
+          if (!r.match) return -2;
+          if (r.availability.some((x) => x.status === "available")) return 2;
+          if (r.availability.some((x) => x.status === "hold")) return 1;
+          return 0;
+        };
+        return score(b) - score(a);
+      }
+      return 0;
+    });
+
+    return rows;
+  }, [data, query, statusFilter, sort]);
+
+  const settings = data?.settings;
+  const lastSync = data?.last_sync;
 
   return (
     <AuthGuard>
-      <main className="min-h-screen">
-        <div className="relative overflow-hidden">
-          <div className="pointer-events-none absolute inset-0 -z-10">
-            <div className="absolute right-10 top-12 h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,_rgba(42,157,143,0.2),_rgba(42,157,143,0))] blur-3xl" />
-            <div className="absolute bottom-0 left-1/4 h-80 w-80 rounded-full bg-[radial-gradient(circle_at_center,_rgba(217,93,57,0.2),_rgba(217,93,57,0))] blur-3xl" />
-          </div>
-
-          <div className="mx-auto max-w-6xl space-y-10 px-6 py-10">
-            <header className="flex flex-wrap items-center justify-between gap-4">
+      <main className="min-h-screen px-6 py-10">
+        <div className="mx-auto flex max-w-6xl flex-col gap-8">
+          <header className="flex flex-col gap-3 rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-xs uppercase tracking-[0.4em] text-black/40">Library snapshot</p>
-                <h1 className="font-display text-3xl sm:text-4xl">Your ShelfSync dashboard</h1>
+                <h1 className="font-display text-3xl tracking-tight">Dashboard</h1>
+                <p className="text-sm text-black/60">Your shelf, matched to your library.</p>
               </div>
-              <button
-                className="rounded-full border border-black/20 px-4 py-2 text-xs uppercase tracking-[0.2em]"
-                onClick={onLogout}
+              <div className="flex items-center gap-2 text-sm">
+                <Link className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5" href="/settings">
+                  Preferences
+                </Link>
+                <Link
+                  className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5"
+                  href="/settings/goodreads"
+                >
+                  Import/Connect
+                </Link>
+                <button
+                  onClick={load}
+                  className="rounded-full bg-black px-4 py-2 text-white hover:bg-black/90"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {settings?.library_system ? (
+              <div className="text-sm text-black/70">
+                <span className="font-medium">Library:</span> {settings.library_system} ·{" "}
+                <span className="font-medium">Formats:</span> {settings.preferred_formats.join(", ") || "ebook"}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
+                Pick a library in <Link className="underline" href="/settings">Preferences</Link> to enable availability.
+              </div>
+            )}
+
+            {lastSync?.last_synced_at ? (
+              <div className="text-xs text-black/60">
+                Last shelf sync: {new Date(lastSync.last_synced_at).toLocaleString()} ({lastSync.source_type})
+                {lastSync.last_sync_status === "error" ? ` · error: ${lastSync.last_sync_error}` : ""}
+              </div>
+            ) : (
+              <div className="text-xs text-black/60">No shelf connected yet. Use Import/Connect.</div>
+            )}
+          </header>
+
+          <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search title/author…"
+                className="w-full max-w-sm rounded-2xl border border-black/10 bg-white px-4 py-2 text-sm"
+              />
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm"
               >
-                Log out
-              </button>
-            </header>
+                <option value="all">All</option>
+                <option value="available">Available</option>
+                <option value="hold">Hold</option>
+                <option value="not_owned">Not owned</option>
+                <option value="unmatched">Unmatched</option>
+              </select>
 
-            <section className="grid gap-6 lg:grid-cols-3">
-              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
-                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Titles</p>
-                <p className="mt-3 text-3xl font-semibold">{stats.total}</p>
-                <p className="text-xs text-black/50">imported so far</p>
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value)}
+                className="rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm"
+              >
+                <option value="title">Sort: Title</option>
+                <option value="availability">Sort: Availability</option>
+                <option value="confidence">Sort: Match confidence</option>
+              </select>
+            </div>
+
+            {loading ? <div className="text-sm text-black/60">Loading…</div> : null}
+            {error ? (
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+                {error.includes("429") ? "Too many requests. Please try again in a moment." : error}
               </div>
-              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
-                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Metadata</p>
-                <p className="mt-3 text-3xl font-semibold text-[var(--accent-2)]">
-                  {stats.withMetadata}
-                </p>
-                <p className="text-xs text-black/50">with ISBN or ASIN</p>
-              </div>
-              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
-                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Needs review</p>
-                <p className="mt-3 text-3xl font-semibold text-[var(--accent)]">
-                  {stats.needsFuzzy}
-                </p>
-                <p className="text-xs text-black/50">may need fuzzy match</p>
-              </div>
-            </section>
+            ) : null}
 
-            <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-              <div className="rounded-3xl border border-black/10 bg-[var(--card)] p-6 shadow-[0_30px_80px_-55px_var(--shadow)]">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.3em] text-black/40">Connect a shelf</p>
-                    <h2 className="font-display text-2xl">Import Goodreads data</h2>
-                  </div>
-                  <p className="text-xs text-black/50">RSS is fastest; CSV is great for exports.</p>
-                </div>
+            {!loading && !error && items.length === 0 ? (
+              <div className="text-sm text-black/60">No items yet. Import a shelf to get started.</div>
+            ) : null}
 
-                <div className="mt-6 grid gap-6 lg:grid-cols-2">
-                  <form className="space-y-4" onSubmit={handleRssSubmit}>
-                    <div className="rounded-2xl border border-black/10 bg-white/70 p-5">
-                      <p className="text-sm font-semibold">RSS feed</p>
-                      <p className="text-xs text-black/50">
-                        Paste the Goodreads shelf RSS URL you want to sync.
-                      </p>
-                      <div className="mt-4 space-y-3">
-                        <input
-                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
-                          placeholder="https://www.goodreads.com/shelf/rss?user=..."
-                          value={rssUrl}
-                          onChange={(event) => setRssUrl(event.target.value)}
-                          required
-                        />
-                        <input
-                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
-                          placeholder="Shelf name (optional)"
-                          value={shelfName}
-                          onChange={(event) => setShelfName(event.target.value)}
-                        />
-                        <button
-                          className="w-full rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                          disabled={busy}
-                          type="submit"
-                        >
-                          Connect RSS
-                        </button>
-                      </div>
-                    </div>
-                  </form>
-
-                  <form className="space-y-4" onSubmit={handleCsvSubmit}>
-                    <div className="rounded-2xl border border-black/10 bg-white/70 p-5">
-                      <p className="text-sm font-semibold">CSV export</p>
-                      <p className="text-xs text-black/50">
-                        Upload the Goodreads export.csv from your account settings.
-                      </p>
-                      <div className="mt-4 space-y-3">
-                        <input
-                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
-                          type="file"
-                          accept=".csv"
-                          onChange={(event) => setCsvFile(event.target.files?.[0] || null)}
-                          required
-                        />
-                        <button
-                          className="w-full rounded-xl bg-[var(--accent-2)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                          disabled={busy || !csvFile}
-                          type="submit"
-                        >
-                          Upload CSV
-                        </button>
-                      </div>
-                    </div>
-                  </form>
-                </div>
-
-                {summary ? (
-                  <div className="mt-6 rounded-2xl border border-black/10 bg-white/70 p-4 text-sm">
-                    <p className="font-semibold">Latest import</p>
-                    <p className="text-xs text-black/60">
-                      Created {summary.created}, updated {summary.updated}, skipped {summary.skipped}
-                    </p>
-                    {summary.errors.length ? (
-                      <p className="mt-2 text-xs text-[var(--accent)]">
-                        {summary.errors.slice(0, 2).join("; ")}
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {error ? (
-                  <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
-                    {error}
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="space-y-6">
-                <div className="rounded-3xl border border-black/10 bg-white/70 p-5 shadow-[0_30px_80px_-55px_var(--shadow)]">
-                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Connected sources</p>
-                  <h2 className="font-display text-2xl">Your shelf inputs</h2>
-                  <div className="mt-4 space-y-3 text-sm text-black/60">
-                    {loading ? (
-                      <p>Loading sources...</p>
-                    ) : sources.length ? (
-                      sources.map((source) => (
-                        <div
-                          key={source.id}
-                          className="rounded-2xl border border-black/10 bg-white/80 p-3"
-                        >
-                          <div className="flex items-center justify-between">
-                            <p className="font-semibold text-black">
-                              {source.shelf_name || source.source_type.toUpperCase()}
-                            </p>
-                            <span className="rounded-full bg-black/5 px-3 py-1 text-xs">
-                              {source.source_type}
+            {!loading && !error && items.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full table-auto border-collapse text-left text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-black/50">
+                    <tr>
+                      <th className="py-3 pr-4">Book</th>
+                      <th className="py-3 pr-4">Shelf</th>
+                      <th className="py-3 pr-4">Match</th>
+                      <th className="py-3 pr-4">Availability</th>
+                      <th className="py-3"> </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((row) => (
+                      <tr key={row.shelf_item_id} className="border-t border-black/5">
+                        <td className="py-3 pr-4">
+                          <div className="font-medium">{row.title}</div>
+                          <div className="text-xs text-black/60">{row.author ?? "Unknown author"}</div>
+                        </td>
+                        <td className="py-3 pr-4 text-xs text-black/70">{row.shelf ?? "—"}</td>
+                        <td className="py-3 pr-4 text-xs">
+                          {row.match ? (
+                            <span>
+                              {Math.round(row.match.confidence * 100)}% · {row.match.method}
                             </span>
+                          ) : (
+                            <span className="text-black/50">Unmatched</span>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <div className="flex flex-wrap gap-2">
+                            {row.match ? (
+                              row.availability.length ? (
+                                row.availability.map((a) => (
+                                  <span
+                                    key={`${row.shelf_item_id}:${a.format}`}
+                                    className={`rounded-full px-3 py-1 text-xs ${pillClass(a.status)}`}
+                                    title={`${a.format} · ${statusLabel(a.status)}`}
+                                  >
+                                    {a.format}: {statusLabel(a.status)}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-900">
+                                  {settings?.library_system ? "Checking…" : "Select library"}
+                                </span>
+                              )
+                            ) : (
+                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-900">
+                                Run matching
+                              </span>
+                            )}
                           </div>
-                          <p className="mt-2 text-xs text-black/50">{source.source_ref}</p>
-                          <p className="mt-2 text-xs text-black/40">
-                            {source.last_imported_at
-                              ? `Last imported ${new Date(source.last_imported_at).toLocaleDateString()}`
-                              : "Not imported yet"}
-                          </p>
-                        </div>
-                      ))
-                    ) : (
-                      <p>No sources yet. Connect RSS or upload CSV to get started.</p>
-                    )}
-                  </div>
-                </div>
+                        </td>
+                        <td className="py-3">
+                          <button
+                            className="rounded-full border border-black/10 px-4 py-2 text-xs hover:bg-black/5"
+                            onClick={() => router.push(`/books/${row.shelf_item_id}`)}
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </section>
 
-                <div className="rounded-3xl border border-black/10 bg-white/70 p-5 shadow-[0_30px_80px_-55px_var(--shadow)]">
-                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Availability</p>
-                  <h2 className="font-display text-2xl">Next actions</h2>
-                  <div className="mt-4 space-y-3 text-sm text-black/60">
-                    <p>Connect a library adapter to start availability checks.</p>
-                    <div className="rounded-2xl border border-black/10 bg-white/80 p-4 text-xs uppercase tracking-[0.25em] text-black/40">
-                      Library adapters coming next
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-[0_30px_80px_-55px_var(--shadow)]">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Latest imports</p>
-                  <h2 className="font-display text-2xl">Recently synced titles</h2>
-                </div>
-                <span className="text-xs text-black/40">Top 8</span>
-              </div>
-              <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {loading ? (
-                  <p className="text-sm text-black/60">Loading items...</p>
-                ) : latestItems.length ? (
-                  latestItems.map((item) => (
-                    <div key={item.id} className="rounded-2xl border border-black/10 bg-white/80 p-4">
-                      <p className="text-sm font-semibold text-black">{item.title}</p>
-                      <p className="text-xs text-black/50">{item.author}</p>
-                      <div className="mt-3 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.2em] text-black/40">
-                        {item.isbn13 || item.isbn10 || item.asin ? (
-                          <span className="rounded-full bg-black/5 px-2 py-1">metadata</span>
-                        ) : (
-                          <span className="rounded-full bg-black/5 px-2 py-1">no id</span>
-                        )}
-                        {item.needs_fuzzy_match ? (
-                          <span className="rounded-full bg-black/5 px-2 py-1">fuzzy</span>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-black/60">
-                    No items yet. Import a shelf to see your list here.
-                  </p>
-                )}
-              </div>
-            </section>
-          </div>
+          <footer className="text-xs text-black/50">
+            Tip: repeated refreshes within the cache TTL should not trigger provider calls.
+          </footer>
         </div>
       </main>
     </AuthGuard>
   );
 }
-
-type ShelfSource = {
-  id: string;
-  source_type: string;
-  source_ref: string;
-  shelf_name: string | null;
-  created_at: string;
-  last_imported_at: string | null;
-};
-
-type ShelfItem = {
-  id: string;
-  title: string;
-  author: string;
-  isbn13: string | null;
-  isbn10: string | null;
-  asin: string | null;
-  goodreads_book_id: string | null;
-  normalized_key: string;
-  needs_fuzzy_match: boolean;
-};
-
-type ImportSummary = {
-  created: number;
-  updated: number;
-  skipped: number;
-  errors: string[];
-};

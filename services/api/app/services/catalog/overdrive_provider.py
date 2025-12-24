@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from app.services.catalog.provider import CatalogProvider
 from app.services.catalog.types import ProviderAvailability, ProviderBook
 
 

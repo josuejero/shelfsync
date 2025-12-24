@@ -9,6 +9,10 @@ from app.core.config import settings
 from app.core.otel import maybe_enable_otel
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes.books import router as books_router
+from app.api.routes.dashboard import router as dashboard_router
+from app.api.routes.libraries import router as libraries_router
+from app.api.routes.settings import router as settings_router
 
 
 def configure_logging() -> None:
@@ -39,5 +43,9 @@ v1 = APIRouter(prefix="/v1")
 v1.include_router(auth_router)
 v1.include_router(shelf_sources_router)
 v1.include_router(shelf_items_router)
+v1.include_router(settings_router)
+v1.include_router(libraries_router)
+v1.include_router(dashboard_router)
+v1.include_router(books_router)
 app.include_router(v1)
 app.include_router(matching_router)

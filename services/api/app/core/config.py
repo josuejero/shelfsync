@@ -92,6 +92,16 @@ class Settings(PydanticBaseSettings):
         default="app/fixtures/catalog_fixture.json",
         validation_alias="FIXTURE_CATALOG_PATH",
     )
+    availability_cache_ttl_secs: int = Field(
+        default=300, validation_alias="AVAILABILITY_CACHE_TTL_SECS"
+    )
+    rate_limit_window_secs: int = Field(default=60, validation_alias="RATE_LIMIT_WINDOW_SECS")
+    rate_limit_dashboard_per_window: int = Field(
+        default=30, validation_alias="RATE_LIMIT_DASHBOARD_PER_WINDOW"
+    )
+    rate_limit_books_per_window: int = Field(
+        default=60, validation_alias="RATE_LIMIT_BOOKS_PER_WINDOW"
+    )
 
 
 settings = Settings()
