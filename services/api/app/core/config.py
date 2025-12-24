@@ -53,12 +53,20 @@ class Settings(PydanticBaseSettings):
     # API
     api_name: str = Field(default="ShelfSync API", validation_alias="API_NAME")
 
+    # Observability
+    otel_enabled: bool = Field(default=False, validation_alias="OTEL_ENABLED")
+
     # Backing services
     database_url: str = Field(
         default="postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync",
         validation_alias="DATABASE_URL",
     )
     redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
+    goodreads_base_url: str | None = Field(default=None, validation_alias="GOODREADS_BASE_URL")
+    goodreads_fetch_timeout_secs: int = Field(
+        default=10, validation_alias="GOODREADS_FETCH_TIMEOUT_SECS"
+    )
+    user_agent: str = Field(default="ShelfSync/0.1", validation_alias="USER_AGENT")
 
     # CORS
     cors_origins: list[str] = Field(

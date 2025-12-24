@@ -8,7 +8,7 @@ from passlib.context import CryptContext  # type: ignore[import-untyped]
 
 
 def _build_password_context() -> CryptContext:
-    preferred = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    preferred = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
     try:
         preferred.hash("bcrypt-healthcheck")
     except Exception:

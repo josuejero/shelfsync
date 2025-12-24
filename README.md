@@ -6,7 +6,7 @@ ShelfSync links your Goodreads shelves to your local library catalog (Libby/Over
 
 - `apps/web`: Next.js UI
 - `services/api`: FastAPI API
-- `infra`: Docker Compose for Postgres + Redis
+- `infra`: Docker Compose for API + Postgres + Redis
 - `docs`: architecture notes + ADRs
 
 ## Phase 0: local dev
@@ -17,6 +17,15 @@ ShelfSync links your Goodreads shelves to your local library catalog (Libby/Over
 - Python 3.14
 
 ### First-time setup
+
+#### Local env vars
+
+Load the API env vars into your shell before running CLI tools like `rq` or `redis-cli`:
+
+```bash
+source scripts/dev-env.sh
+# or: eval "$(scripts/dev-env.sh --print)"
+```
 
 #### API
 

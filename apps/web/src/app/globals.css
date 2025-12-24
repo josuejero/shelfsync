@@ -4,9 +4,23 @@
 
 :root {
   color-scheme: light;
+  --ink: #1c1b1a;
+  --paper: #fbf4ea;
+  --paper-strong: #f5e8d7;
+  --accent: #d95d39;
+  --accent-2: #2a9d8f;
+  --accent-3: #f4a261;
+  --card: #fffaf2;
+  --shadow: rgba(38, 31, 20, 0.12);
 }
 
 body {
   min-height: 100%;
-  background-color: #ffffff;
+  background-color: var(--paper);
+  font-family: var(--font-body, ui-sans-serif, system-ui);
+}
+
+.font-display {
+  font-family: var(--font-display, ui-serif, serif);
+  letter-spacing: -0.02em;
 }

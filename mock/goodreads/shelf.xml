@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Goodreads Shelf</title>
+    <item>
+      <title>The Great Gatsby</title>
+      <dc:creator>F. Scott Fitzgerald</dc:creator>
+      <link>https://www.goodreads.com/book/show/4671.The_Great_Gatsby</link>
+      <description><![CDATA[ISBN: 9780743273565 ASIN: B000FC1PWA]]></description>
+    </item>
+    <item>
+      <title>Pride and Prejudice</title>
+      <dc:creator>Jane Austen</dc:creator>
+      <link>https://www.goodreads.com/book/show/1885.Pride_and_Prejudice</link>
+      <description><![CDATA[ISBN13: 9780141439518 ASIN: B000QCS8TW]]></description>
+    </item>
+  </channel>
+</rss>

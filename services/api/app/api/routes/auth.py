@@ -11,6 +11,17 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+DEMO_EMAIL = "demo@example.com"
+DEMO_PASSWORD = "password"
+DEMO_ALLOWED_PASSWORDS = {DEMO_PASSWORD, "password123"}
+
+
+def _should_auto_create_demo(payload: LoginIn) -> bool:
+    return (
+        settings.env == "local"
+        and payload.email.lower() == DEMO_EMAIL
+        and payload.password in DEMO_ALLOWED_PASSWORDS
+    )
 
 
 @router.post("/signup", response_model=UserOut)
@@ -46,8 +57,29 @@ def signup(payload: SignUpIn, response: Response, db: Session = Depends(get_db))
 @router.post("/login", response_model=UserOut)
 def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
-    if not user or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    demo_login = _should_auto_create_demo(payload)
+    if not user:
+        if demo_login:
+            user = User(email=DEMO_EMAIL, password_hash=hash_password(DEMO_PASSWORD))
+            db.add(user)
+            db.flush()  # assigns user.id
+            db.add(UserSettings(user_id=user.id, preferred_formats=["ebook"]))
+            db.commit()
+            db.refresh(user)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+            )
+    elif not verify_password(payload.password, user.password_hash):
+        if demo_login and user.email.lower() == DEMO_EMAIL:
+            user.password_hash = hash_password(DEMO_PASSWORD)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+            )
 
     token = create_access_token(subject=user.id)
     response.set_cookie(

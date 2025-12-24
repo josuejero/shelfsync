@@ -1,0 +1,60 @@
+openapi: 3.0.3
+info:
+  title: Goodreads Mock
+  version: "0.2.0"
+servers:
+  - url: http://localhost:4010
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              example:
+                status: ok
+  /shelf/rss:
+    get:
+      parameters:
+        - name: user
+          in: query
+          schema:
+            type: string
+        - name: shelf
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sample RSS feed
+          content:
+            application/rss+xml:
+              schema:
+                type: string
+              examples:
+                sample:
+                  summary: Sample shelf RSS feed
+                  externalValue: mock/goodreads/shelf.xml
+  /shelf/export.csv:
+    get:
+      parameters:
+        - name: user
+          in: query
+          schema:
+            type: string
+        - name: shelf
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Goodreads export CSV
+          content:
+            text/csv:
+              schema:
+                type: string
+              examples:
+                sample:
+                  summary: Sample Goodreads export
+                  externalValue: mock/goodreads/export.csv

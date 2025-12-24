@@ -28,5 +28,14 @@ services:
       timeout: 3s
       retries: 10
 
+  goodreads-mock:
+    image: stoplight/prism:5
+    command: ["mock", "-h", "0.0.0.0", "/spec/goodreads-mock.yaml"]
+    ports:
+      - "4010:4010"
+    volumes:
+      - ../docs/openapi/goodreads-mock.yaml:/spec/goodreads-mock.yaml:ro
+      - ../mock:/spec/mock:ro
+
 volumes:
   postgres_data:

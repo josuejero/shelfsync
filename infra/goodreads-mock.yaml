@@ -1,0 +1,43 @@
+openapi: 3.0.3
+info:
+  title: Goodreads Mock
+  version: "0.1.0"
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              example:
+                status: ok
+  /shelf/rss:
+    get:
+      parameters:
+        - name: user
+          in: query
+          schema:
+            type: string
+        - name: shelf
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sample RSS feed
+          content:
+            application/rss+xml:
+              example: |
+                <?xml version="1.0" encoding="UTF-8"?>
+                <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+                  <channel>
+                    <title>Goodreads Shelf</title>
+                    <item>
+                      <title>The Great Gatsby</title>
+                      <dc:creator>F. Scott Fitzgerald</dc:creator>
+                      <link>https://www.goodreads.com/book/show/4671.The_Great_Gatsby</link>
+                      <description><![CDATA[ISBN: 9780743273565]]></description>
+                    </item>
+                  </channel>
+                </rss>

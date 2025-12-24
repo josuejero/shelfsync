@@ -31,3 +31,36 @@ def test_login_rejects_bad_password(client):
     client.post("/v1/auth/signup", json={"email": "c@example.com", "password": "password123"})
     resp = client.post("/v1/auth/login", json={"email": "c@example.com", "password": "wrongwrong"})
     assert resp.status_code in (401, 403)
+
+
+def test_login_accepts_legacy_pbkdf2_hash(client, db_session):
+    from passlib.context import CryptContext
+
+    from app.models.user import User
+
+    legacy_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+    db_session.add(
+        User(email="legacy@example.com", password_hash=legacy_context.hash("password123"))
+    )
+    db_session.flush()
+
+    resp = client.post(
+        "/v1/auth/login", json={"email": "legacy@example.com", "password": "password123"}
+    )
+    assert resp.status_code == 200
+
+
+def test_login_auto_creates_demo_user(client):
+    resp = client.post(
+        "/v1/auth/login", json={"email": "demo@example.com", "password": "password123"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "demo@example.com"
+
+
+def test_login_auto_creates_demo_user_with_simple_password(client):
+    resp = client.post(
+        "/v1/auth/login", json={"email": "demo@example.com", "password": "password"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "demo@example.com"

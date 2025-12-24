@@ -46,15 +46,34 @@ The content is organized as follows:
     feature_request.yml
   workflows/
     ci.yml
+    codeql.yml
   dependabot.yml
   PULL_REQUEST_TEMPLATE.md
 apps/
   web/
     src/
       app/
+        dashboard/
+          page.tsx
+        signin/
+          page.tsx
+        signup/
+          page.tsx
         globals.css
         layout.tsx
+        page.test.tsx
         page.tsx
+      components/
+        AuthGuard.tsx
+        TryDemoButton.tsx
+      lib/
+        api.ts
+      test/
+        msw/
+          handlers.ts
+          server.ts
+        setup.ts
+    .env.local.example
     .eslintrc.json
     next-env.d.ts
     next.config.mjs
@@ -62,21 +81,79 @@ apps/
     postcss.config.js
     tailwind.config.js
     tsconfig.json
+    tsconfig.tsbuildinfo
+    vitest.config.ts
 docs/
   adr/
     0001-tech-stack.md
+  openapi/
+    goodreads-mock.yaml
   architecture.md
 infra/
+  docker-compose.full.yml
   docker-compose.yml
+  goodreads-mock.yaml
+mock/
+  goodreads/
+    export.csv
+    shelf.xml
 scripts/
   dev.sh
 services/
   api/
+    alembic/
+      versions/
+        8399dceac96e_phase1_init_schema.py
+        8f008b42145c_phase2_ingestion_fields.py
+      env.py
+      README
+      script.py.mako
     app/
       api/
+        routes/
+          auth.py
+          health.py
+          shelf_items.py
+          shelf_sources.py
         __init__.py
+        deps.py
+      core/
+        config.py
+        otel.py
+        security.py
+      db/
+        session.py
+      domain/
+        normalize.py
+      ingestion/
+        csv_import.py
+        fetch.py
+        rss.py
+      models/
+        __init__.py
+        base.py
+        library.py
+        shelf_item.py
+        shelf_source.py
+        user_settings.py
+        user.py
+      schemas/
+        auth.py
+        shelf.py
+      services/
+        import_service.py
       __init__.py
       main.py
+    bin/
+      alembic
+    tests/
+      conftest.py
+      test_auth.py
+      test_health.py
+    .dockerignore
+    .env.example
+    alembic.ini
+    Dockerfile
     requirements-dev.txt
     requirements.txt
 .editorconfig
@@ -93,6 +170,1191 @@ SECURITY.md
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path=".github/workflows/codeql.yml">
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["javascript", "python"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+</file>
+
+<file path="apps/web/src/app/page.test.tsx">
+/// <reference types="vitest" />
+
+import { render, screen } from "@testing-library/react";
+
+beforeAll(() => {
+  process.env.NEXT_PUBLIC_API_BASE_URL = "http://localhost:8000";
+});
+
+test("renders the hero title", async () => {
+  const { default: Home } = await import("./page");
+  render(<Home />);
+
+  expect(screen.getByText("ShelfSync")).toBeInTheDocument();
+});
+</file>
+
+<file path="apps/web/src/components/TryDemoButton.tsx">
+"use client";
+
+import { apiFetch } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+const DEMO_EMAIL = "demo@example.com";
+const DEMO_PASSWORD = "password123";
+const DEMO_RSS_URL = "https://www.goodreads.com/shelf/rss?user=demo&shelf=read";
+
+type TryDemoButtonProps = {
+  className?: string;
+};
+
+export function TryDemoButton({ className }: TryDemoButtonProps) {
+  const router = useRouter();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const label = pending ? "Loading demo..." : "Try demo data";
+
+  async function handleClick() {
+    setError(null);
+    setPending(true);
+
+    try {
+      await apiFetch("/v1/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: DEMO_EMAIL, password: DEMO_PASSWORD }),
+      });
+
+      await apiFetch("/v1/shelf-sources/rss", {
+        method: "POST",
+        body: JSON.stringify({ rss_url: DEMO_RSS_URL, shelf_name: "Demo shelf" }),
+      });
+
+      router.push("/dashboard");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load demo data.";
+      setError(message);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const buttonClassName = `${className ?? ""} disabled:opacity-60 disabled:cursor-not-allowed`;
+
+  return (
+    <div className="space-y-2">
+      <button className={buttonClassName} disabled={pending} onClick={handleClick}>
+        {label}
+      </button>
+      {error ? <p className="text-xs text-[var(--accent)]">{error}</p> : null}
+    </div>
+  );
+}
+</file>
+
+<file path="apps/web/src/test/msw/handlers.ts">
+import { http, HttpResponse } from "msw";
+
+export const handlers = [
+  http.get("*/health", () => HttpResponse.json({ ok: true })),
+];
+</file>
+
+<file path="apps/web/src/test/msw/server.ts">
+import { setupServer } from "msw/node";
+
+import { handlers } from "./handlers";
+
+export const server = setupServer(...handlers);
+</file>
+
+<file path="apps/web/src/test/setup.ts">
+import "@testing-library/jest-dom/vitest";
+import { afterAll, afterEach, beforeAll, vi } from "vitest";
+
+import { server } from "./msw/server";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+  }),
+}));
+
+beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+</file>
+
+<file path="apps/web/.env.local.example">
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+</file>
+
+<file path="apps/web/vitest.config.ts">
+import react from "@vitejs/plugin-react";
+import path from "node:path";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["src/test/setup.ts"],
+    globals: true,
+    css: true,
+  },
+});
+</file>
+
+<file path="docs/openapi/goodreads-mock.yaml">
+openapi: 3.0.3
+info:
+  title: Goodreads Mock
+  version: "0.2.0"
+servers:
+  - url: http://localhost:4010
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              example:
+                status: ok
+  /shelf/rss:
+    get:
+      parameters:
+        - name: user
+          in: query
+          schema:
+            type: string
+        - name: shelf
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sample RSS feed
+          content:
+            application/rss+xml:
+              schema:
+                type: string
+              examples:
+                sample:
+                  summary: Sample shelf RSS feed
+                  externalValue: mock/goodreads/shelf.xml
+  /shelf/export.csv:
+    get:
+      parameters:
+        - name: user
+          in: query
+          schema:
+            type: string
+        - name: shelf
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Goodreads export CSV
+          content:
+            text/csv:
+              schema:
+                type: string
+              examples:
+                sample:
+                  summary: Sample Goodreads export
+                  externalValue: mock/goodreads/export.csv
+</file>
+
+<file path="infra/docker-compose.full.yml">
+services:
+  api:
+    build:
+      context: ../services/api
+    command: sh -c "python -m alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://shelfsync:shelfsync@postgres:5432/shelfsync
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+</file>
+
+<file path="infra/goodreads-mock.yaml">
+openapi: 3.0.3
+info:
+  title: Goodreads Mock
+  version: "0.1.0"
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              example:
+                status: ok
+  /shelf/rss:
+    get:
+      parameters:
+        - name: user
+          in: query
+          schema:
+            type: string
+        - name: shelf
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sample RSS feed
+          content:
+            application/rss+xml:
+              example: |
+                <?xml version="1.0" encoding="UTF-8"?>
+                <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+                  <channel>
+                    <title>Goodreads Shelf</title>
+                    <item>
+                      <title>The Great Gatsby</title>
+                      <dc:creator>F. Scott Fitzgerald</dc:creator>
+                      <link>https://www.goodreads.com/book/show/4671.The_Great_Gatsby</link>
+                      <description><![CDATA[ISBN: 9780743273565]]></description>
+                    </item>
+                  </channel>
+                </rss>
+</file>
+
+<file path="mock/goodreads/export.csv">
+Title,Author,ISBN13,ISBN,ASIN
+The Great Gatsby,F. Scott Fitzgerald,9780743273565,0743273567,B000FC1PWA
+Pride and Prejudice,Jane Austen,9780141439518,0141439513,B000QCS8TW
+Neuromancer,William Gibson,9780441569595,0441569595,B000FC2L5M
+</file>
+
+<file path="mock/goodreads/shelf.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Goodreads Shelf</title>
+    <item>
+      <title>The Great Gatsby</title>
+      <dc:creator>F. Scott Fitzgerald</dc:creator>
+      <link>https://www.goodreads.com/book/show/4671.The_Great_Gatsby</link>
+      <description><![CDATA[ISBN: 9780743273565 ASIN: B000FC1PWA]]></description>
+    </item>
+    <item>
+      <title>Pride and Prejudice</title>
+      <dc:creator>Jane Austen</dc:creator>
+      <link>https://www.goodreads.com/book/show/1885.Pride_and_Prejudice</link>
+      <description><![CDATA[ISBN13: 9780141439518 ASIN: B000QCS8TW]]></description>
+    </item>
+  </channel>
+</rss>
+</file>
+
+<file path="services/api/alembic/versions/8f008b42145c_phase2_ingestion_fields.py">
+"""phase2 ingestion fields
+
+Revision ID: 8f008b42145c
+Revises: 8399dceac96e
+Create Date: 2025-12-23 10:43:34.266235
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+# revision identifiers, used by Alembic.
+revision: str = '8f008b42145c'
+down_revision: Union[str, Sequence[str], None] = '8399dceac96e'
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.add_column('shelf_items', sa.Column('isbn13', sa.String(length=13), nullable=True))
+    op.add_column('shelf_items', sa.Column('isbn10', sa.String(length=10), nullable=True))
+    op.add_column('shelf_items', sa.Column('asin', sa.String(length=20), nullable=True))
+    op.add_column('shelf_items', sa.Column('goodreads_book_id', sa.String(length=40), nullable=True))
+    op.add_column('shelf_items', sa.Column('normalized_title', sa.String(length=600), nullable=False))
+    op.add_column('shelf_items', sa.Column('normalized_author', sa.String(length=400), nullable=False))
+    op.add_column('shelf_items', sa.Column('normalized_key', sa.String(length=1100), nullable=False))
+    op.add_column('shelf_items', sa.Column('needs_fuzzy_match', sa.Boolean(), nullable=False))
+    op.add_column('shelf_items', sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False))
+    op.drop_index(op.f('ix_shelf_items_user_title_author'), table_name='shelf_items')
+    op.create_index('ix_shelf_items_user_normkey', 'shelf_items', ['user_id', 'normalized_key'], unique=False)
+    op.create_unique_constraint('uq_shelf_item_user_normkey', 'shelf_items', ['user_id', 'normalized_key'])
+    op.add_column('shelf_sources', sa.Column('shelf_name', sa.String(length=200), nullable=True))
+    op.add_column('shelf_sources', sa.Column('is_active', sa.Boolean(), nullable=False))
+    op.add_column('shelf_sources', sa.Column('last_imported_at', sa.DateTime(timezone=True), nullable=True))
+    op.create_unique_constraint('uq_shelf_source_user_type_ref', 'shelf_sources', ['user_id', 'source_type', 'source_ref'])
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_constraint('uq_shelf_source_user_type_ref', 'shelf_sources', type_='unique')
+    op.drop_column('shelf_sources', 'last_imported_at')
+    op.drop_column('shelf_sources', 'is_active')
+    op.drop_column('shelf_sources', 'shelf_name')
+    op.drop_constraint('uq_shelf_item_user_normkey', 'shelf_items', type_='unique')
+    op.drop_index('ix_shelf_items_user_normkey', table_name='shelf_items')
+    op.create_index(op.f('ix_shelf_items_user_title_author'), 'shelf_items', ['user_id', 'title', 'author'], unique=False)
+    op.drop_column('shelf_items', 'updated_at')
+    op.drop_column('shelf_items', 'needs_fuzzy_match')
+    op.drop_column('shelf_items', 'normalized_key')
+    op.drop_column('shelf_items', 'normalized_author')
+    op.drop_column('shelf_items', 'normalized_title')
+    op.drop_column('shelf_items', 'goodreads_book_id')
+    op.drop_column('shelf_items', 'asin')
+    op.drop_column('shelf_items', 'isbn10')
+    op.drop_column('shelf_items', 'isbn13')
+    # ### end Alembic commands ###
+</file>
+
+<file path="services/api/app/api/routes/shelf_items.py">
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.models.shelf_item import ShelfItem
+from app.models.user import User
+from app.schemas.shelf import ShelfItemOut
+
+
+router = APIRouter(prefix="/shelf-items", tags=["shelf-items"])
+
+
+@router.get("", response_model=list[ShelfItemOut])
+def list_items(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    limit = max(1, min(200, limit))
+    offset = max(0, offset)
+
+    return (
+        db.query(ShelfItem)
+        .filter(ShelfItem.user_id == current_user.id)
+        .order_by(ShelfItem.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+</file>
+
+<file path="services/api/app/api/routes/shelf_sources.py">
+from __future__ import annotations
+
+import hashlib
+import logging
+from datetime import datetime, timezone
+
+import httpx
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.ingestion.csv_import import parse_goodreads_csv
+from app.ingestion.fetch import fetch_text
+from app.ingestion.rss import parse_goodreads_rss
+from app.models.shelf_item import ShelfItem
+from app.models.shelf_source import ShelfSource
+from app.models.user import User
+from app.schemas.shelf import ImportSummaryOut, RssConnectIn, ShelfSourceOut
+from app.services.import_service import upsert_shelf_items
+
+
+router = APIRouter(prefix="/shelf-sources", tags=["shelf-sources"])
+logger = logging.getLogger(__name__)
+
+
+MAX_CSV_BYTES = 5 * 1024 * 1024
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@router.get("", response_model=list[ShelfSourceOut])
+def list_sources(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return (
+        db.query(ShelfSource)
+        .filter(ShelfSource.user_id == current_user.id)
+        .order_by(ShelfSource.created_at.desc())
+        .all()
+    )
+
+
+@router.post("/rss", response_model=ImportSummaryOut)
+async def connect_rss(
+    payload: RssConnectIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    url = str(payload.rss_url)
+
+    # Fetch RSS (fail fast)
+    try:
+        xml_text = await fetch_text(url)
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to fetch RSS feed: {e}",
+        )
+
+    # Parse RSS (fail fast)
+    try:
+        parsed_items = parse_goodreads_rss(xml_text)
+    except Exception:
+        logger.exception("RSS parse failed")
+        raise HTTPException(status_code=400, detail="RSS feed could not be parsed. Check the URL.")
+
+    if not parsed_items:
+        raise HTTPException(status_code=400, detail="RSS feed contained no usable items.")
+
+    # Upsert source and items atomically
+    try:
+        with db.begin():
+            source = (
+                db.query(ShelfSource)
+                .filter(
+                    ShelfSource.user_id == current_user.id,
+                    ShelfSource.source_type == "rss",
+                    ShelfSource.source_ref == url,
+                )
+                .first()
+            )
+            if not source:
+                source = ShelfSource(
+                    user_id=current_user.id,
+                    source_type="rss",
+                    source_ref=url,
+                    shelf_name=payload.shelf_name,
+                )
+                db.add(source)
+                db.flush()
+            else:
+                # keep shelf_name if newly provided
+                if payload.shelf_name and not source.shelf_name:
+                    source.shelf_name = payload.shelf_name
+
+            summary = upsert_shelf_items(
+                db=db,
+                user_id=current_user.id,
+                shelf_source_id=source.id,
+                items=parsed_items,
+            )
+
+            source.last_imported_at = utcnow()
+
+        return ImportSummaryOut(
+            created=summary.created,
+            updated=summary.updated,
+            skipped=summary.skipped,
+            errors=summary.errors,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("RSS import transaction failed")
+        raise HTTPException(status_code=500, detail="Import failed unexpectedly.")
+
+
+@router.post("/csv", response_model=ImportSummaryOut)
+async def upload_csv(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Please upload a .csv file.")
+
+    data = await file.read(MAX_CSV_BYTES + 1)
+    if len(data) > MAX_CSV_BYTES:
+        raise HTTPException(status_code=400, detail="CSV is too large (max 5MB).")
+
+    items, errors = parse_goodreads_csv(data)
+    if errors and not items:
+        # Treat as fatal to avoid partial ingestion.
+        raise HTTPException(status_code=400, detail={"message": "Malformed CSV", "errors": errors})
+
+    # Create a shelf source ref based on content hash (helps idempotency across repeats)
+    content_hash = hashlib.sha256(data).hexdigest()[:16]
+    source_ref = f"csv:{file.filename}:{content_hash}"
+
+    try:
+        with db.begin():
+            source = (
+                db.query(ShelfSource)
+                .filter(
+                    ShelfSource.user_id == current_user.id,
+                    ShelfSource.source_type == "csv",
+                    ShelfSource.source_ref == source_ref,
+                )
+                .first()
+            )
+            if not source:
+                source = ShelfSource(
+                    user_id=current_user.id,
+                    source_type="csv",
+                    source_ref=source_ref,
+                    shelf_name=None,
+                )
+                db.add(source)
+                db.flush()
+
+            summary = upsert_shelf_items(
+                db=db,
+                user_id=current_user.id,
+                shelf_source_id=source.id,
+                items=items,
+                errors=errors,
+            )
+
+            source.last_imported_at = utcnow()
+
+        return ImportSummaryOut(
+            created=summary.created,
+            updated=summary.updated,
+            skipped=summary.skipped,
+            errors=summary.errors,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("CSV import transaction failed")
+        raise HTTPException(status_code=500, detail="Import failed unexpectedly.")
+
+
+@router.delete("/{source_id}")
+def disconnect_source(
+    source_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    source = (
+        db.query(ShelfSource)
+        .filter(ShelfSource.id == source_id, ShelfSource.user_id == current_user.id)
+        .first()
+    )
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    with db.begin():
+        # Delete associated items for simplicity in Phase 2.
+        db.query(ShelfItem).filter(
+            ShelfItem.user_id == current_user.id,
+            ShelfItem.shelf_source_id == source.id,
+        ).delete(synchronize_session=False)
+        db.delete(source)
+
+    return {"ok": True}
+</file>
+
+<file path="services/api/app/core/otel.py">
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
+
+
+def maybe_enable_otel(app: FastAPI, enabled: bool, service_name: str) -> None:
+    if not enabled:
+        return
+
+    try:
+        from opentelemetry import trace
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    except Exception:  # pragma: no cover - safety net for optional deps
+        logger.exception("OpenTelemetry dependencies unavailable")
+        return
+
+    resource = Resource.create({"service.name": service_name})
+    provider = TracerProvider(resource=resource)
+    trace.set_tracer_provider(provider)
+    provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+
+    FastAPIInstrumentor.instrument_app(app)
+    logger.info("OpenTelemetry instrumentation enabled")
+</file>
+
+<file path="services/api/app/domain/normalize.py">
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+
+_non_alnum = re.compile(r"[^a-z0-9]+")
+_digits_or_x = re.compile(r"[^0-9Xx]")
+
+
+def normalize_text(s: str) -> str:
+    s = s.strip().lower()
+    s = _non_alnum.sub(" ", s)
+    s = " ".join(s.split())
+    return s
+
+
+def normalize_isbn(raw: str) -> str:
+    """Return a best-effort normalized ISBN string.
+
+    - Removes hyphens/spaces.
+    - Keeps digits (and X for ISBN-10 check digit).
+    - Does not validate checksum in Phase 2 (keep it simple and resilient).
+
+    If you want checksum validation later, add it as a non-fatal warning and keep ingestion permissive.
+    """
+    cleaned = _digits_or_x.sub("", raw or "").upper()
+    return cleaned
+
+
+@dataclass(frozen=True)
+class NormalizedIdentifiers:
+    isbn13: str | None
+    isbn10: str | None
+    asin: str | None
+
+    normalized_title: str
+    normalized_author: str
+    normalized_key: str
+    needs_fuzzy_match: bool
+
+
+def build_normalized(
+    *,
+    title: str,
+    author: str,
+    isbn13: str | None = None,
+    isbn10: str | None = None,
+    asin: str | None = None,
+) -> NormalizedIdentifiers:
+    n_title = normalize_text(title)
+    n_author = normalize_text(author)
+
+    i13 = normalize_isbn(isbn13) if isbn13 else None
+    i10 = normalize_isbn(isbn10) if isbn10 else None
+
+    # Prefer ISBN-13, then ISBN-10, then ASIN, else title+author.
+    if i13 and len(i13) == 13 and i13.isdigit():
+        key = f"isbn13:{i13}"
+        return NormalizedIdentifiers(i13, i10, asin, n_title, n_author, key, False)
+
+    if i10 and len(i10) == 10:
+        key = f"isbn10:{i10}"
+        return NormalizedIdentifiers(i13, i10, asin, n_title, n_author, key, False)
+
+    if asin:
+        a = asin.strip()
+        key = f"asin:{a}"
+        return NormalizedIdentifiers(i13, i10, a, n_title, n_author, key, False)
+
+    # Fallback to fuzzy matching later
+    key = f"title_author:{n_title}|{n_author}"
+    return NormalizedIdentifiers(i13, i10, asin, n_title, n_author, key, True)
+</file>
+
+<file path="services/api/app/ingestion/csv_import.py">
+from __future__ import annotations
+
+import csv
+import io
+
+
+REQUIRED = {"title", "author"}
+
+
+def _normalize_header(h: str) -> str:
+    return " ".join((h or "").strip().lower().split())
+
+
+def parse_goodreads_csv(csv_bytes: bytes) -> tuple[list[dict], list[str]]:
+    """Parse Goodreads export CSV.
+
+    Returns: (items, errors)
+    Each item contains minimal fields:
+    - title
+    - author
+    - isbn13
+    - isbn10
+    - asin
+
+    Parsing is forgiving about extra columns.
+    It collects row-level errors and continues, unless the file is structurally invalid.
+    """
+
+    errors: list[str] = []
+
+    try:
+        text = csv_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = csv_bytes.decode("utf-8", errors="replace")
+
+    buf = io.StringIO(text)
+    reader = csv.DictReader(buf)
+
+    if not reader.fieldnames:
+        return [], ["CSV appears to be missing a header row."]
+
+    # Build a header map so we can handle variants like "ISBN13" vs "ISBN 13".
+    header_map = {_normalize_header(h): h for h in reader.fieldnames}
+
+    missing = [h for h in REQUIRED if h not in header_map]
+    if missing:
+        return [], [f"CSV is missing required column(s): {', '.join(sorted(missing))}"]
+
+    title_col = header_map["title"]
+    author_col = header_map["author"]
+
+    isbn13_col = header_map.get("isbn13") or header_map.get("isbn 13")
+    isbn10_col = header_map.get("isbn") or header_map.get("isbn10") or header_map.get("isbn 10")
+    asin_col = header_map.get("asin")
+
+    items: list[dict] = []
+
+    for idx, row in enumerate(reader, start=2):
+        title = (row.get(title_col) or "").strip()
+        author = (row.get(author_col) or "").strip()
+
+        if not title or not author:
+            errors.append(f"Row {idx}: missing title or author")
+            continue
+
+        items.append(
+            {
+                "title": title,
+                "author": author,
+                "isbn13": (row.get(isbn13_col) or "").strip() if isbn13_col else None,
+                "isbn10": (row.get(isbn10_col) or "").strip() if isbn10_col else None,
+                "asin": (row.get(asin_col) or "").strip() if asin_col else None,
+            }
+        )
+
+    return items, errors
+</file>
+
+<file path="services/api/app/ingestion/fetch.py">
+from __future__ import annotations
+
+from urllib.parse import urlparse, urlunparse
+
+import httpx
+
+from app.core.config import settings
+
+
+def _rewrite_goodreads_url(url: str, base_url: str | None) -> str:
+    if not base_url:
+        return url
+
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if not hostname or not (hostname == "goodreads.com" or hostname.endswith(".goodreads.com")):
+        return url
+
+    base = urlparse(base_url)
+    if not base.scheme or not base.netloc:
+        return url
+
+    base_path = base.path.rstrip("/")
+    incoming_path = parsed.path or "/"
+    merged_path = f"{base_path}{incoming_path}" if base_path else incoming_path
+
+    rewritten = parsed._replace(scheme=base.scheme, netloc=base.netloc, path=merged_path)
+    return urlunparse(rewritten)
+
+
+async def fetch_text(url: str) -> str:
+    request_url = _rewrite_goodreads_url(url, settings.goodreads_base_url)
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        resp = await client.get(request_url, headers={"User-Agent": "ShelfSync/0.1"})
+        resp.raise_for_status()
+        return resp.text
+</file>
+
+<file path="services/api/app/ingestion/rss.py">
+from __future__ import annotations
+
+import re
+import xml.etree.ElementTree as ET
+
+from bs4 import BeautifulSoup
+
+
+ISBN_RE = re.compile(r"\b(?:ISBN(?:-13)?|ISBN13)\s*[:#]?\s*([0-9\-]{10,17})\b", re.IGNORECASE)
+ASIN_RE = re.compile(r"\bASIN\s*[:#]?\s*([A-Z0-9]{8,20})\b", re.IGNORECASE)
+
+
+def _local(tag: str) -> str:
+    # Handles namespaced tags like {http://purl.org/dc/elements/1.1/}creator
+    return tag.split("}")[-1]
+
+
+def _find_first_text(elem: ET.Element, wanted: set[str]) -> str | None:
+    for child in elem.iter():
+        if _local(child.tag) in wanted and (child.text or "").strip():
+            return (child.text or "").strip()
+    return None
+
+
+def _extract_identifiers_from_description(description_html: str) -> tuple[str | None, str | None]:
+    if not description_html:
+        return None, None
+
+    # Goodreads often embeds metadata in HTML inside <description>.
+    soup = BeautifulSoup(description_html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+
+    isbn = None
+    asin = None
+
+    m = ISBN_RE.search(text)
+    if m:
+        isbn = m.group(1)
+
+    m2 = ASIN_RE.search(text)
+    if m2:
+        asin = m2.group(1)
+
+    return isbn, asin
+
+
+def parse_goodreads_rss(xml_text: str) -> list[dict]:
+    """Parse a Goodreads shelf RSS feed.
+
+    Returns a list of dicts with minimal fields:
+    - title
+    - author
+    - isbn (raw-ish, may be isbn10 or isbn13)
+    - asin
+    - goodreads_book_id (best-effort)
+
+    The parser is defensive: it will skip items missing title/author.
+    """
+
+    root = ET.fromstring(xml_text)
+    items = root.findall(".//item")
+
+    out: list[dict] = []
+
+    for item in items:
+        title = _find_first_text(item, {"title"})
+        author = _find_first_text(item, {"author_name", "creator", "author"})
+        link = _find_first_text(item, {"link"})
+        description = _find_first_text(item, {"description", "encoded"})
+
+        if not title or not author:
+            continue
+
+        isbn_from_desc, asin_from_desc = _extract_identifiers_from_description(description or "")
+
+        goodreads_book_id = None
+        if link and "/book/show/" in link:
+            # https://www.goodreads.com/book/show/<id>-...
+            try:
+                part = link.split("/book/show/", 1)[1]
+                goodreads_book_id = part.split("-", 1)[0].strip("/")
+            except Exception:
+                goodreads_book_id = None
+
+        out.append(
+            {
+                "title": title.strip(),
+                "author": author.strip(),
+                "isbn": isbn_from_desc,
+                "asin": asin_from_desc,
+                "goodreads_book_id": goodreads_book_id,
+            }
+        )
+
+    return out
+</file>
+
+<file path="services/api/app/schemas/shelf.py">
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field, HttpUrl
+
+
+class RssConnectIn(BaseModel):
+    rss_url: HttpUrl
+    shelf_name: str | None = Field(default=None, max_length=200)
+
+
+class ImportSummaryOut(BaseModel):
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]
+
+
+class ShelfSourceOut(BaseModel):
+    id: str
+    source_type: str
+    source_ref: str
+    shelf_name: str | None
+    created_at: datetime
+    last_imported_at: datetime | None
+
+    class Config:
+        from_attributes = True
+
+
+class ShelfItemOut(BaseModel):
+    id: str
+    title: str
+    author: str
+    isbn13: str | None
+    isbn10: str | None
+    asin: str | None
+    goodreads_book_id: str | None
+
+    normalized_key: str
+    needs_fuzzy_match: bool
+
+    class Config:
+        from_attributes = True
+</file>
+
+<file path="services/api/app/services/import_service.py">
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from sqlalchemy.orm import Session
+
+from app.domain.normalize import build_normalized
+from app.models.shelf_item import ShelfItem
+
+
+@dataclass
+class ImportSummary:
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]
+
+
+def upsert_shelf_items(
+    *,
+    db: Session,
+    user_id: str,
+    shelf_source_id: str | None,
+    items: list[dict],
+    errors: list[str] | None = None,
+) -> ImportSummary:
+    errors_out = list(errors or [])
+
+    # Preload existing items for this user keyed by normalized_key for fast upsert.
+    existing = (
+        db.query(ShelfItem)
+        .filter(ShelfItem.user_id == user_id)
+        .all()
+    )
+    by_key = {it.normalized_key: it for it in existing}
+
+    created = updated = skipped = 0
+
+    for it in items:
+        title = (it.get("title") or "").strip()
+        author = (it.get("author") or "").strip()
+
+        if not title or not author:
+            skipped += 1
+            errors_out.append("Skipped item missing title/author")
+            continue
+
+        isbn13 = it.get("isbn13")
+        isbn10 = it.get("isbn10")
+
+        # RSS provides a single "isbn" sometimes; treat as isbn10/13 raw.
+        if not isbn13 and not isbn10 and it.get("isbn"):
+            raw_isbn = it.get("isbn")
+            if raw_isbn and len(str(raw_isbn).strip()) >= 10:
+                # Best-effort: put into isbn13 if it looks 13 digits, else isbn10.
+                s = str(raw_isbn).strip()
+                if len("".join([c for c in s if c.isdigit()])) >= 13:
+                    isbn13 = s
+                else:
+                    isbn10 = s
+
+        asin = it.get("asin")
+
+        norm = build_normalized(
+            title=title,
+            author=author,
+            isbn13=isbn13,
+            isbn10=isbn10,
+            asin=asin,
+        )
+
+        existing_item = by_key.get(norm.normalized_key)
+        if existing_item:
+            # Update key fields (keep this conservative).
+            existing_item.title = title
+            existing_item.author = author
+            existing_item.isbn13 = norm.isbn13
+            existing_item.isbn10 = norm.isbn10
+            existing_item.asin = norm.asin
+            existing_item.normalized_title = norm.normalized_title
+            existing_item.normalized_author = norm.normalized_author
+            existing_item.needs_fuzzy_match = norm.needs_fuzzy_match
+            existing_item.shelf_source_id = shelf_source_id
+
+            # Optional goodreads metadata
+            if it.get("goodreads_book_id"):
+                existing_item.goodreads_book_id = str(it.get("goodreads_book_id"))
+
+            updated += 1
+            continue
+
+        new_item = ShelfItem(
+            user_id=user_id,
+            shelf_source_id=shelf_source_id,
+            title=title,
+            author=author,
+            isbn13=norm.isbn13,
+            isbn10=norm.isbn10,
+            asin=norm.asin,
+            goodreads_book_id=str(it.get("goodreads_book_id")) if it.get("goodreads_book_id") else None,
+            normalized_title=norm.normalized_title,
+            normalized_author=norm.normalized_author,
+            normalized_key=norm.normalized_key,
+            needs_fuzzy_match=norm.needs_fuzzy_match,
+        )
+        db.add(new_item)
+        by_key[norm.normalized_key] = new_item
+        created += 1
+
+    return ImportSummary(created=created, updated=updated, skipped=skipped, errors=errors_out)
+</file>
+
+<file path="services/api/tests/test_health.py">
+def test_health_check(client):
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+</file>
+
+<file path="services/api/.dockerignore">
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+.env
+dist/
+build/
+</file>
+
+<file path="services/api/.env.example">
+ENV=local
+API_NAME=ShelfSync API
+
+DATABASE_URL=postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync
+REDIS_URL=redis://localhost:6379/0
+OTEL_ENABLED=false
+
+GOODREADS_BASE_URL=http://localhost:4010
+
+# Demo toggles (reserved for local/dev flows)
+DEMO_LOGIN_ENABLED=true
+DEMO_SEED_ENABLED=false
+
+# pydantic-settings can parse JSON lists; keep it simple in dev
+CORS_ORIGINS=["http://localhost:3000"]
+
+AUTH_SECRET_KEY=CHANGE_ME_IN_PROD
+AUTH_ACCESS_TOKEN_TTL_MINUTES=10080
+AUTH_COOKIE_NAME=access_token
+AUTH_COOKIE_SECURE=false
+AUTH_COOKIE_SAMESITE=lax
+</file>
+
+<file path="services/api/Dockerfile">
+FROM python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+</file>
 
 <file path=".github/ISSUE_TEMPLATE/bug_report.yml">
 name: Bug report
@@ -222,6 +1484,537 @@ updates:
 ## Notes
 </file>
 
+<file path="apps/web/src/app/dashboard/page.tsx">
+"use client";
+
+import { AuthGuard } from "@/components/AuthGuard";
+import { apiFetch } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const [sources, setSources] = useState<ShelfSource[]>([]);
+  const [items, setItems] = useState<ShelfItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [rssUrl, setRssUrl] = useState("");
+  const [shelfName, setShelfName] = useState("");
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [summary, setSummary] = useState<ImportSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onLogout() {
+    await apiFetch("/v1/auth/logout", { method: "POST" });
+    router.push("/signin");
+  }
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [sourceList, itemList] = await Promise.all([
+        apiFetch<ShelfSource[]>("/v1/shelf-sources"),
+        apiFetch<ShelfItem[]>("/v1/shelf-items?limit=200"),
+      ]);
+      setSources(sourceList);
+      setItems(itemList);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load shelf data.";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  const stats = useMemo(() => {
+    const total = items.length;
+    const withMetadata = items.filter((item) => item.isbn13 || item.isbn10 || item.asin).length;
+    const needsFuzzy = items.filter((item) => item.needs_fuzzy_match).length;
+    return { total, withMetadata, needsFuzzy };
+  }, [items]);
+
+  async function handleRssSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSummary(null);
+    setBusy(true);
+
+    try {
+      const result = await apiFetch<ImportSummary>("/v1/shelf-sources/rss", {
+        method: "POST",
+        body: JSON.stringify({ rss_url: rssUrl, shelf_name: shelfName || null }),
+      });
+      setSummary(result);
+      setRssUrl("");
+      setShelfName("");
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "RSS import failed.";
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCsvSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!csvFile) return;
+
+    setError(null);
+    setSummary(null);
+    setBusy(true);
+
+    try {
+      const data = new FormData();
+      data.append("file", csvFile);
+      const result = await apiFetch<ImportSummary>("/v1/shelf-sources/csv", {
+        method: "POST",
+        body: data,
+      });
+      setSummary(result);
+      setCsvFile(null);
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "CSV import failed.";
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const latestItems = items.slice(0, 8);
+
+  return (
+    <AuthGuard>
+      <main className="min-h-screen">
+        <div className="relative overflow-hidden">
+          <div className="pointer-events-none absolute inset-0 -z-10">
+            <div className="absolute right-10 top-12 h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,_rgba(42,157,143,0.2),_rgba(42,157,143,0))] blur-3xl" />
+            <div className="absolute bottom-0 left-1/4 h-80 w-80 rounded-full bg-[radial-gradient(circle_at_center,_rgba(217,93,57,0.2),_rgba(217,93,57,0))] blur-3xl" />
+          </div>
+
+          <div className="mx-auto max-w-6xl space-y-10 px-6 py-10">
+            <header className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.4em] text-black/40">Library snapshot</p>
+                <h1 className="font-display text-3xl sm:text-4xl">Your ShelfSync dashboard</h1>
+              </div>
+              <button
+                className="rounded-full border border-black/20 px-4 py-2 text-xs uppercase tracking-[0.2em]"
+                onClick={onLogout}
+              >
+                Log out
+              </button>
+            </header>
+
+            <section className="grid gap-6 lg:grid-cols-3">
+              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
+                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Titles</p>
+                <p className="mt-3 text-3xl font-semibold">{stats.total}</p>
+                <p className="text-xs text-black/50">imported so far</p>
+              </div>
+              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
+                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Metadata</p>
+                <p className="mt-3 text-3xl font-semibold text-[var(--accent-2)]">
+                  {stats.withMetadata}
+                </p>
+                <p className="text-xs text-black/50">with ISBN or ASIN</p>
+              </div>
+              <div className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]">
+                <p className="text-xs uppercase tracking-[0.3em] text-black/40">Needs review</p>
+                <p className="mt-3 text-3xl font-semibold text-[var(--accent)]">
+                  {stats.needsFuzzy}
+                </p>
+                <p className="text-xs text-black/50">may need fuzzy match</p>
+              </div>
+            </section>
+
+            <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-3xl border border-black/10 bg-[var(--card)] p-6 shadow-[0_30px_80px_-55px_var(--shadow)]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-black/40">Connect a shelf</p>
+                    <h2 className="font-display text-2xl">Import Goodreads data</h2>
+                  </div>
+                  <p className="text-xs text-black/50">RSS is fastest; CSV is great for exports.</p>
+                </div>
+
+                <div className="mt-6 grid gap-6 lg:grid-cols-2">
+                  <form className="space-y-4" onSubmit={handleRssSubmit}>
+                    <div className="rounded-2xl border border-black/10 bg-white/70 p-5">
+                      <p className="text-sm font-semibold">RSS feed</p>
+                      <p className="text-xs text-black/50">
+                        Paste the Goodreads shelf RSS URL you want to sync.
+                      </p>
+                      <div className="mt-4 space-y-3">
+                        <input
+                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
+                          placeholder="https://www.goodreads.com/shelf/rss?user=..."
+                          value={rssUrl}
+                          onChange={(event) => setRssUrl(event.target.value)}
+                          required
+                        />
+                        <input
+                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
+                          placeholder="Shelf name (optional)"
+                          value={shelfName}
+                          onChange={(event) => setShelfName(event.target.value)}
+                        />
+                        <button
+                          className="w-full rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                          disabled={busy}
+                          type="submit"
+                        >
+                          Connect RSS
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+
+                  <form className="space-y-4" onSubmit={handleCsvSubmit}>
+                    <div className="rounded-2xl border border-black/10 bg-white/70 p-5">
+                      <p className="text-sm font-semibold">CSV export</p>
+                      <p className="text-xs text-black/50">
+                        Upload the Goodreads export.csv from your account settings.
+                      </p>
+                      <div className="mt-4 space-y-3">
+                        <input
+                          className="w-full rounded-xl border border-black/10 bg-white px-4 py-2 text-sm"
+                          type="file"
+                          accept=".csv"
+                          onChange={(event) => setCsvFile(event.target.files?.[0] || null)}
+                          required
+                        />
+                        <button
+                          className="w-full rounded-xl bg-[var(--accent-2)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                          disabled={busy || !csvFile}
+                          type="submit"
+                        >
+                          Upload CSV
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                </div>
+
+                {summary ? (
+                  <div className="mt-6 rounded-2xl border border-black/10 bg-white/70 p-4 text-sm">
+                    <p className="font-semibold">Latest import</p>
+                    <p className="text-xs text-black/60">
+                      Created {summary.created}, updated {summary.updated}, skipped {summary.skipped}
+                    </p>
+                    {summary.errors.length ? (
+                      <p className="mt-2 text-xs text-[var(--accent)]">
+                        {summary.errors.slice(0, 2).join("; ")}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {error ? (
+                  <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
+                    {error}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="space-y-6">
+                <div className="rounded-3xl border border-black/10 bg-white/70 p-5 shadow-[0_30px_80px_-55px_var(--shadow)]">
+                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Connected sources</p>
+                  <h2 className="font-display text-2xl">Your shelf inputs</h2>
+                  <div className="mt-4 space-y-3 text-sm text-black/60">
+                    {loading ? (
+                      <p>Loading sources...</p>
+                    ) : sources.length ? (
+                      sources.map((source) => (
+                        <div
+                          key={source.id}
+                          className="rounded-2xl border border-black/10 bg-white/80 p-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="font-semibold text-black">
+                              {source.shelf_name || source.source_type.toUpperCase()}
+                            </p>
+                            <span className="rounded-full bg-black/5 px-3 py-1 text-xs">
+                              {source.source_type}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-xs text-black/50">{source.source_ref}</p>
+                          <p className="mt-2 text-xs text-black/40">
+                            {source.last_imported_at
+                              ? `Last imported ${new Date(source.last_imported_at).toLocaleDateString()}`
+                              : "Not imported yet"}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p>No sources yet. Connect RSS or upload CSV to get started.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-black/10 bg-white/70 p-5 shadow-[0_30px_80px_-55px_var(--shadow)]">
+                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Availability</p>
+                  <h2 className="font-display text-2xl">Next actions</h2>
+                  <div className="mt-4 space-y-3 text-sm text-black/60">
+                    <p>Connect a library adapter to start availability checks.</p>
+                    <div className="rounded-2xl border border-black/10 bg-white/80 p-4 text-xs uppercase tracking-[0.25em] text-black/40">
+                      Library adapters coming next
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-[0_30px_80px_-55px_var(--shadow)]">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-black/40">Latest imports</p>
+                  <h2 className="font-display text-2xl">Recently synced titles</h2>
+                </div>
+                <span className="text-xs text-black/40">Top 8</span>
+              </div>
+              <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {loading ? (
+                  <p className="text-sm text-black/60">Loading items...</p>
+                ) : latestItems.length ? (
+                  latestItems.map((item) => (
+                    <div key={item.id} className="rounded-2xl border border-black/10 bg-white/80 p-4">
+                      <p className="text-sm font-semibold text-black">{item.title}</p>
+                      <p className="text-xs text-black/50">{item.author}</p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.2em] text-black/40">
+                        {item.isbn13 || item.isbn10 || item.asin ? (
+                          <span className="rounded-full bg-black/5 px-2 py-1">metadata</span>
+                        ) : (
+                          <span className="rounded-full bg-black/5 px-2 py-1">no id</span>
+                        )}
+                        {item.needs_fuzzy_match ? (
+                          <span className="rounded-full bg-black/5 px-2 py-1">fuzzy</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-black/60">
+                    No items yet. Import a shelf to see your list here.
+                  </p>
+                )}
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </AuthGuard>
+  );
+}
+
+type ShelfSource = {
+  id: string;
+  source_type: string;
+  source_ref: string;
+  shelf_name: string | null;
+  created_at: string;
+  last_imported_at: string | null;
+};
+
+type ShelfItem = {
+  id: string;
+  title: string;
+  author: string;
+  isbn13: string | null;
+  isbn10: string | null;
+  asin: string | null;
+  goodreads_book_id: string | null;
+  normalized_key: string;
+  needs_fuzzy_match: boolean;
+};
+
+type ImportSummary = {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+};
+</file>
+
+<file path="apps/web/src/app/signin/page.tsx">
+"use client";
+
+import { apiFetch } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+type UserOut = { id: string; email: string };
+
+export default function SignInPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      await apiFetch<UserOut>("/v1/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError(err?.message ?? "Sign in failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="min-h-screen p-8">
+      <div className="mx-auto max-w-md space-y-6">
+        <h1 className="text-3xl font-bold">Sign in</h1>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={onSubmit} className="space-y-4">
+          <label className="block space-y-1">
+            <span className="text-sm font-medium">Email</span>
+            <input
+              className="w-full rounded-lg border p-2"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              required
+              autoComplete="email"
+            />
+          </label>
+
+          <label className="block space-y-1">
+            <span className="text-sm font-medium">Password</span>
+            <input
+              className="w-full rounded-lg border p-2"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              required
+              minLength={8}
+              autoComplete="current-password"
+            />
+          </label>
+
+          <button
+            disabled={loading}
+            className="w-full rounded-lg bg-black px-4 py-2 text-white disabled:opacity-50"
+          >
+            {loading ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+
+        <p className="text-sm text-gray-600">
+          New here? <a className="underline" href="/signup">Create an account</a>
+        </p>
+      </div>
+    </main>
+  );
+}
+</file>
+
+<file path="apps/web/src/app/signup/page.tsx">
+"use client";
+
+import { apiFetch } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+type UserOut = { id: string; email: string };
+
+export default function SignUpPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      await apiFetch<UserOut>("/v1/auth/signup", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError(err?.message ?? "Sign up failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="min-h-screen p-8">
+      <div className="mx-auto max-w-md space-y-6">
+        <h1 className="text-3xl font-bold">Create account</h1>
+
+        {error && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={onSubmit} className="space-y-4">
+          <label className="block space-y-1">
+            <span className="text-sm font-medium">Email</span>
+            <input
+              className="w-full rounded-lg border p-2"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              required
+              autoComplete="email"
+            />
+          </label>
+
+          <label className="block space-y-1">
+            <span className="text-sm font-medium">Password</span>
+            <input
+              className="w-full rounded-lg border p-2"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              required
+              minLength={8}
+              autoComplete="new-password"
+            />
+          </label>
+
+          <button
+            disabled={loading}
+            className="w-full rounded-lg bg-black px-4 py-2 text-white disabled:opacity-50"
+          >
+            {loading ? "Creating…" : "Create account"}
+          </button>
+        </form>
+
+        <p className="text-sm text-gray-600">
+          Already have an account? <a className="underline" href="/signin">Sign in</a>
+        </p>
+      </div>
+    </main>
+  );
+}
+</file>
+
 <file path="apps/web/src/app/globals.css">
 @tailwind base;
 @tailwind components;
@@ -229,17 +2022,43 @@ updates:
 
 :root {
   color-scheme: light;
+  --ink: #1c1b1a;
+  --paper: #fbf4ea;
+  --paper-strong: #f5e8d7;
+  --accent: #d95d39;
+  --accent-2: #2a9d8f;
+  --accent-3: #f4a261;
+  --card: #fffaf2;
+  --shadow: rgba(38, 31, 20, 0.12);
 }
 
 body {
   min-height: 100%;
-  background-color: #ffffff;
+  background-color: var(--paper);
+  font-family: var(--font-body, ui-sans-serif, system-ui);
+}
+
+.font-display {
+  font-family: var(--font-display, ui-serif, serif);
+  letter-spacing: -0.02em;
 }
 </file>
 
 <file path="apps/web/src/app/layout.tsx">
-import "./globals.css";
 import type { Metadata } from "next";
+import { Newsreader, Space_Grotesk } from "next/font/google";
+
+import "./globals.css";
+
+const displayFont = Newsreader({
+  subsets: ["latin"],
+  variable: "--font-display",
+});
+
+const bodyFont = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-body",
+});
 
 export const metadata: Metadata = {
   title: "ShelfSync",
@@ -253,51 +2072,203 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-white text-gray-900 antialiased">{children}</body>
+      <body
+        className={`${displayFont.variable} ${bodyFont.variable} bg-[var(--paper)] text-[var(--ink)] antialiased`}
+      >
+        {children}
+      </body>
     </html>
   );
 }
 </file>
 
 <file path="apps/web/src/app/page.tsx">
+import Link from "next/link";
+
+import { TryDemoButton } from "@/components/TryDemoButton";
+
 export default function Home() {
   return (
-    <main className="min-h-screen p-8">
-      <div className="mx-auto max-w-2xl space-y-6">
-        <h1 className="text-4xl font-bold">ShelfSync</h1>
-        <p className="text-lg text-gray-600">
-          Connect your Goodreads shelf and see what your library has available -
-          in one dashboard.
-        </p>
-
-        <div className="rounded-xl border p-4">
-          <p className="font-medium">Phase 0 status</p>
-          <ul className="list-disc pl-6 text-sm text-gray-600">
-            <li>Web app boots</li>
-            <li>API health endpoint available</li>
-            <li>Postgres + Redis available locally</li>
-            <li>CI gates wired</li>
-          </ul>
+    <main className="min-h-screen">
+      <div className="relative overflow-hidden">
+        <div className="pointer-events-none absolute inset-0 -z-10">
+          <div className="absolute -left-32 top-10 h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,_rgba(217,93,57,0.35),_rgba(217,93,57,0))] blur-2xl" />
+          <div className="absolute right-10 top-24 h-80 w-80 rounded-full bg-[radial-gradient(circle_at_center,_rgba(42,157,143,0.35),_rgba(42,157,143,0))] blur-2xl" />
+          <div className="absolute bottom-0 left-1/3 h-96 w-96 rounded-full bg-[radial-gradient(circle_at_center,_rgba(244,162,97,0.25),_rgba(244,162,97,0))] blur-3xl" />
         </div>
 
-        <div className="rounded-xl border p-4 text-sm text-gray-600">
-          <p className="font-medium text-gray-800">Next up</p>
-          <p>
-            Phase 1 adds database models + migrations, env-driven config, and the
-            first adapter skeletons.
-          </p>
-        </div>
+        <div className="mx-auto flex max-w-6xl flex-col gap-16 px-6 py-12 lg:py-20">
+          <nav className="flex items-center justify-between text-sm">
+            <div className="font-display text-xl tracking-tight">ShelfSync</div>
+            <div className="flex items-center gap-4">
+              <Link className="rounded-full border border-black/10 px-4 py-2 text-xs uppercase tracking-[0.2em]" href="/signin">
+                Sign in
+              </Link>
+              <Link className="rounded-full bg-[var(--ink)] px-4 py-2 text-xs uppercase tracking-[0.2em] text-[var(--paper)]" href="/signup">
+                Create account
+              </Link>
+            </div>
+          </nav>
 
-        <button
-          className="rounded-lg bg-black px-4 py-2 text-white disabled:opacity-50"
-          disabled
-          title="Phase 3+"
-        >
-          Try demo data (coming soon)
-        </button>
+          <section className="grid items-center gap-12 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="space-y-6">
+              <p className="text-xs uppercase tracking-[0.5em] text-black/50">Goodreads → Library</p>
+              <h1 className="font-display text-4xl leading-tight sm:text-5xl">
+                Sync your shelves, then see what your library can actually loan today.
+              </h1>
+              <p className="max-w-xl text-lg text-black/70">
+                Import RSS or CSV exports from Goodreads, normalize the titles, and get a clean
+                availability snapshot you can act on.
+              </p>
+              <div className="flex flex-wrap items-center gap-4">
+                <TryDemoButton className="rounded-full bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-white shadow-[0_18px_40px_-28px_var(--accent)]" />
+                <Link className="rounded-full border border-black/20 px-6 py-3 text-sm font-semibold" href="/signup">
+                  Start a new shelf
+                </Link>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-black/10 bg-[var(--card)] p-6 shadow-[0_25px_60px_-40px_var(--shadow)]">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-black/40">
+                  <span>Connect</span>
+                  <span>Import</span>
+                  <span>Check</span>
+                </div>
+                <div className="rounded-2xl border border-black/10 bg-white/70 p-5">
+                  <p className="text-sm font-semibold">Demo pipeline</p>
+                  <div className="mt-4 space-y-3 text-sm text-black/60">
+                    <div className="flex items-center justify-between">
+                      <span>Goodreads RSS</span>
+                      <span className="rounded-full bg-black/5 px-3 py-1 text-xs">connected</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>CSV export</span>
+                      <span className="rounded-full bg-black/5 px-3 py-1 text-xs">optional</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Availability scan</span>
+                      <span className="rounded-full bg-black/5 px-3 py-1 text-xs">next</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm">
+                    <p className="text-xs uppercase tracking-[0.3em] text-black/40">Snapshot</p>
+                    <p className="mt-3 text-2xl font-semibold text-[var(--accent)]">24</p>
+                    <p className="text-xs text-black/50">titles ready to check</p>
+                  </div>
+                  <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm">
+                    <p className="text-xs uppercase tracking-[0.3em] text-black/40">Coverage</p>
+                    <p className="mt-3 text-2xl font-semibold text-[var(--accent-2)]">82%</p>
+                    <p className="text-xs text-black/50">with ISBN metadata</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="grid gap-6 lg:grid-cols-3">
+            {[
+              {
+                title: "Connect once",
+                description: "Paste your Goodreads RSS or upload CSV exports. We store the source and keep it fresh."
+              },
+              {
+                title: "Normalize titles",
+                description: "We extract ISBNs, ASINs, and Goodreads IDs so every item is ready for matching."
+              },
+              {
+                title: "Track availability",
+                description: "See what your library can deliver today and what needs a manual check."
+              }
+            ].map((item) => (
+              <div
+                key={item.title}
+                className="rounded-2xl border border-black/10 bg-white/70 p-6 shadow-[0_25px_60px_-48px_var(--shadow)]"
+              >
+                <p className="font-display text-xl">{item.title}</p>
+                <p className="mt-3 text-sm text-black/60">{item.description}</p>
+              </div>
+            ))}
+          </section>
+        </div>
       </div>
     </main>
   );
+}
+</file>
+
+<file path="apps/web/src/components/AuthGuard.tsx">
+"use client";
+
+import { apiFetch } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+
+type UserOut = { id: string; email: string };
+
+export function AuthGuard({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<UserOut | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const me = await apiFetch<UserOut>("/v1/auth/me");
+        if (!alive) return;
+        setUser(me);
+      } catch {
+        router.push("/signin");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [router]);
+
+  if (loading) {
+    return <div className="p-8 text-sm text-gray-600">Checking session…</div>;
+  }
+
+  if (!user) return null;
+
+  return <>{children}</>;
+}
+</file>
+
+<file path="apps/web/src/lib/api.ts">
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL;
+
+if (!API_BASE) {
+  throw new Error("Missing NEXT_PUBLIC_API_BASE_URL");
+}
+
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers || {});
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+
+  if (!headers.has("Content-Type") && !isFormData) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+    credentials: "include",
+  });
+
+  if (!res.ok) {
+    // FastAPI errors often come as JSON, but keep this resilient.
+    const text = await res.text();
+    throw new Error(text || `Request failed: ${res.status}`);
+  }
+
+  return res.json() as Promise<T>;
 }
 </file>
 
@@ -333,7 +2304,9 @@ export default nextConfig;
     "dev": "next dev",
     "lint": "next lint",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "next": "^14.2.5",
@@ -341,15 +2314,21 @@ export default nextConfig;
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
     "@types/node": "^20.14.10",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.0.2",
     "autoprefixer": "^10.4.20",
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.2.35",
+    "jsdom": "^25.0.1",
+    "msw": "^2.10.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^3.2.4"
   }
 }
 </file>
@@ -374,42 +2353,8 @@ module.exports = {
 };
 </file>
 
-<file path="apps/web/tsconfig.json">
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ES2020"
-    ],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "preserve",
-    "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ]
-  },
-  "include": [
-    "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
-    ".next/types/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules"
-  ]
-}
+<file path="apps/web/tsconfig.tsbuildinfo">
+{"fileNames":["./node_modules/typescript/lib/lib.es5.d.ts","./node_modules/typescript/lib/lib.es2015.d.ts","./node_modules/typescript/lib/lib.es2016.d.ts","./node_modules/typescript/lib/lib.es2017.d.ts","./node_modules/typescript/lib/lib.es2018.d.ts","./node_modules/typescript/lib/lib.es2019.d.ts","./node_modules/typescript/lib/lib.es2020.d.ts","./node_modules/typescript/lib/lib.dom.d.ts","./node_modules/typescript/lib/lib.dom.iterable.d.ts","./node_modules/typescript/lib/lib.es2015.core.d.ts","./node_modules/typescript/lib/lib.es2015.collection.d.ts","./node_modules/typescript/lib/lib.es2015.generator.d.ts","./node_modules/typescript/lib/lib.es2015.iterable.d.ts","./node_modules/typescript/lib/lib.es2015.promise.d.ts","./node_modules/typescript/lib/lib.es2015.proxy.d.ts","./node_modules/typescript/lib/lib.es2015.reflect.d.ts","./node_modules/typescript/lib/lib.es2015.symbol.d.ts","./node_modules/typescript/lib/lib.es2015.symbol.wellknown.d.ts","./node_modules/typescript/lib/lib.es2016.array.include.d.ts","./node_modules/typescript/lib/lib.es2016.intl.d.ts","./node_modules/typescript/lib/lib.es2017.arraybuffer.d.ts","./node_modules/typescript/lib/lib.es2017.date.d.ts","./node_modules/typescript/lib/lib.es2017.object.d.ts","./node_modules/typescript/lib/lib.es2017.sharedmemory.d.ts","./node_modules/typescript/lib/lib.es2017.string.d.ts","./node_modules/typescript/lib/lib.es2017.intl.d.ts","./node_modules/typescript/lib/lib.es2017.typedarrays.d.ts","./node_modules/typescript/lib/lib.es2018.asyncgenerator.d.ts","./node_modules/typescript/lib/lib.es2018.asynciterable.d.ts","./node_modules/typescript/lib/lib.es2018.intl.d.ts","./node_modules/typescript/lib/lib.es2018.promise.d.ts","./node_modules/typescript/lib/lib.es2018.regexp.d.ts","./node_modules/typescript/lib/lib.es2019.array.d.ts","./node_modules/typescript/lib/lib.es2019.object.d.ts","./node_modules/typescript/lib/lib.es2019.string.d.ts","./node_modules/typescript/lib/lib.es2019.symbol.d.ts","./node_modules/typescript/lib/lib.es2019.intl.d.ts","./node_modules/typescript/lib/lib.es2020.bigint.d.ts","./node_modules/typescript/lib/lib.es2020.date.d.ts","./node_modules/typescript/lib/lib.es2020.promise.d.ts","./node_modules/typescript/lib/lib.es2020.sharedmemory.d.ts","./node_modules/typescript/lib/lib.es2020.string.d.ts","./node_modules/typescript/lib/lib.es2020.symbol.wellknown.d.ts","./node_modules/typescript/lib/lib.es2020.intl.d.ts","./node_modules/typescript/lib/lib.es2020.number.d.ts","./node_modules/typescript/lib/lib.decorators.d.ts","./node_modules/typescript/lib/lib.decorators.legacy.d.ts","./node_modules/next/dist/styled-jsx/types/css.d.ts","./node_modules/@types/react/global.d.ts","./node_modules/csstype/index.d.ts","./node_modules/@types/prop-types/index.d.ts","./node_modules/@types/react/index.d.ts","./node_modules/next/dist/styled-jsx/types/index.d.ts","./node_modules/next/dist/styled-jsx/types/macro.d.ts","./node_modules/next/dist/styled-jsx/types/style.d.ts","./node_modules/next/dist/styled-jsx/types/global.d.ts","./node_modules/next/dist/shared/lib/amp.d.ts","./node_modules/next/amp.d.ts","./node_modules/@types/node/compatibility/disposable.d.ts","./node_modules/@types/node/compatibility/indexable.d.ts","./node_modules/@types/node/compatibility/iterators.d.ts","./node_modules/@types/node/compatibility/index.d.ts","./node_modules/@types/node/globals.typedarray.d.ts","./node_modules/@types/node/buffer.buffer.d.ts","./node_modules/@types/node/globals.d.ts","./node_modules/@types/node/web-globals/abortcontroller.d.ts","./node_modules/@types/node/web-globals/domexception.d.ts","./node_modules/@types/node/web-globals/events.d.ts","./node_modules/undici-types/header.d.ts","./node_modules/undici-types/readable.d.ts","./node_modules/undici-types/file.d.ts","./node_modules/undici-types/fetch.d.ts","./node_modules/undici-types/formdata.d.ts","./node_modules/undici-types/connector.d.ts","./node_modules/undici-types/client.d.ts","./node_modules/undici-types/errors.d.ts","./node_modules/undici-types/dispatcher.d.ts","./node_modules/undici-types/global-dispatcher.d.ts","./node_modules/undici-types/global-origin.d.ts","./node_modules/undici-types/pool-stats.d.ts","./node_modules/undici-types/pool.d.ts","./node_modules/undici-types/handlers.d.ts","./node_modules/undici-types/balanced-pool.d.ts","./node_modules/undici-types/agent.d.ts","./node_modules/undici-types/mock-interceptor.d.ts","./node_modules/undici-types/mock-agent.d.ts","./node_modules/undici-types/mock-client.d.ts","./node_modules/undici-types/mock-pool.d.ts","./node_modules/undici-types/mock-errors.d.ts","./node_modules/undici-types/proxy-agent.d.ts","./node_modules/undici-types/env-http-proxy-agent.d.ts","./node_modules/undici-types/retry-handler.d.ts","./node_modules/undici-types/retry-agent.d.ts","./node_modules/undici-types/api.d.ts","./node_modules/undici-types/interceptors.d.ts","./node_modules/undici-types/util.d.ts","./node_modules/undici-types/cookies.d.ts","./node_modules/undici-types/patch.d.ts","./node_modules/undici-types/websocket.d.ts","./node_modules/undici-types/eventsource.d.ts","./node_modules/undici-types/filereader.d.ts","./node_modules/undici-types/diagnostics-channel.d.ts","./node_modules/undici-types/content-type.d.ts","./node_modules/undici-types/cache.d.ts","./node_modules/undici-types/index.d.ts","./node_modules/@types/node/web-globals/fetch.d.ts","./node_modules/@types/node/assert.d.ts","./node_modules/@types/node/assert/strict.d.ts","./node_modules/@types/node/async_hooks.d.ts","./node_modules/@types/node/buffer.d.ts","./node_modules/@types/node/child_process.d.ts","./node_modules/@types/node/cluster.d.ts","./node_modules/@types/node/console.d.ts","./node_modules/@types/node/constants.d.ts","./node_modules/@types/node/crypto.d.ts","./node_modules/@types/node/dgram.d.ts","./node_modules/@types/node/diagnostics_channel.d.ts","./node_modules/@types/node/dns.d.ts","./node_modules/@types/node/dns/promises.d.ts","./node_modules/@types/node/domain.d.ts","./node_modules/@types/node/events.d.ts","./node_modules/@types/node/fs.d.ts","./node_modules/@types/node/fs/promises.d.ts","./node_modules/@types/node/http.d.ts","./node_modules/@types/node/http2.d.ts","./node_modules/@types/node/https.d.ts","./node_modules/@types/node/inspector.generated.d.ts","./node_modules/@types/node/module.d.ts","./node_modules/@types/node/net.d.ts","./node_modules/@types/node/os.d.ts","./node_modules/@types/node/path.d.ts","./node_modules/@types/node/perf_hooks.d.ts","./node_modules/@types/node/process.d.ts","./node_modules/@types/node/punycode.d.ts","./node_modules/@types/node/querystring.d.ts","./node_modules/@types/node/readline.d.ts","./node_modules/@types/node/readline/promises.d.ts","./node_modules/@types/node/repl.d.ts","./node_modules/@types/node/sea.d.ts","./node_modules/@types/node/stream.d.ts","./node_modules/@types/node/stream/promises.d.ts","./node_modules/@types/node/stream/consumers.d.ts","./node_modules/@types/node/stream/web.d.ts","./node_modules/@types/node/string_decoder.d.ts","./node_modules/@types/node/test.d.ts","./node_modules/@types/node/timers.d.ts","./node_modules/@types/node/timers/promises.d.ts","./node_modules/@types/node/tls.d.ts","./node_modules/@types/node/trace_events.d.ts","./node_modules/@types/node/tty.d.ts","./node_modules/@types/node/url.d.ts","./node_modules/@types/node/util.d.ts","./node_modules/@types/node/v8.d.ts","./node_modules/@types/node/vm.d.ts","./node_modules/@types/node/wasi.d.ts","./node_modules/@types/node/worker_threads.d.ts","./node_modules/@types/node/zlib.d.ts","./node_modules/@types/node/index.d.ts","./node_modules/next/dist/server/get-page-files.d.ts","./node_modules/@types/react/canary.d.ts","./node_modules/@types/react/experimental.d.ts","./node_modules/@types/react-dom/index.d.ts","./node_modules/@types/react-dom/canary.d.ts","./node_modules/@types/react-dom/experimental.d.ts","./node_modules/next/dist/compiled/webpack/webpack.d.ts","./node_modules/next/dist/server/config.d.ts","./node_modules/next/dist/lib/load-custom-routes.d.ts","./node_modules/next/dist/shared/lib/image-config.d.ts","./node_modules/next/dist/build/webpack/plugins/subresource-integrity-plugin.d.ts","./node_modules/next/dist/server/body-streams.d.ts","./node_modules/next/dist/server/future/route-kind.d.ts","./node_modules/next/dist/server/future/route-definitions/route-definition.d.ts","./node_modules/next/dist/server/future/route-matches/route-match.d.ts","./node_modules/next/dist/client/components/app-router-headers.d.ts","./node_modules/next/dist/server/request-meta.d.ts","./node_modules/next/dist/server/lib/revalidate.d.ts","./node_modules/next/dist/server/config-shared.d.ts","./node_modules/next/dist/server/base-http/index.d.ts","./node_modules/next/dist/server/api-utils/index.d.ts","./node_modules/next/dist/server/node-environment.d.ts","./node_modules/next/dist/server/require-hook.d.ts","./node_modules/next/dist/server/node-polyfill-crypto.d.ts","./node_modules/next/dist/lib/page-types.d.ts","./node_modules/next/dist/build/analysis/get-page-static-info.d.ts","./node_modules/next/dist/build/webpack/loaders/get-module-build-info.d.ts","./node_modules/next/dist/build/webpack/plugins/middleware-plugin.d.ts","./node_modules/next/dist/server/render-result.d.ts","./node_modules/next/dist/server/future/helpers/i18n-provider.d.ts","./node_modules/next/dist/server/web/next-url.d.ts","./node_modules/next/dist/compiled/@edge-runtime/cookies/index.d.ts","./node_modules/next/dist/server/web/spec-extension/cookies.d.ts","./node_modules/next/dist/server/web/spec-extension/request.d.ts","./node_modules/next/dist/server/web/spec-extension/fetch-event.d.ts","./node_modules/next/dist/server/web/spec-extension/response.d.ts","./node_modules/next/dist/server/web/types.d.ts","./node_modules/next/dist/lib/setup-exception-listeners.d.ts","./node_modules/next/dist/lib/constants.d.ts","./node_modules/next/dist/build/index.d.ts","./node_modules/next/dist/build/webpack/plugins/pages-manifest-plugin.d.ts","./node_modules/next/dist/shared/lib/router/utils/route-regex.d.ts","./node_modules/next/dist/shared/lib/router/utils/route-matcher.d.ts","./node_modules/next/dist/shared/lib/router/utils/parse-url.d.ts","./node_modules/next/dist/server/base-http/node.d.ts","./node_modules/next/dist/server/font-utils.d.ts","./node_modules/next/dist/build/webpack/plugins/flight-manifest-plugin.d.ts","./node_modules/next/dist/server/future/route-modules/route-module.d.ts","./node_modules/next/dist/shared/lib/deep-readonly.d.ts","./node_modules/next/dist/server/load-components.d.ts","./node_modules/next/dist/shared/lib/router/utils/middleware-route-matcher.d.ts","./node_modules/next/dist/build/webpack/plugins/next-font-manifest-plugin.d.ts","./node_modules/next/dist/server/future/route-definitions/locale-route-definition.d.ts","./node_modules/next/dist/server/future/route-definitions/pages-route-definition.d.ts","./node_modules/next/dist/shared/lib/mitt.d.ts","./node_modules/next/dist/client/with-router.d.ts","./node_modules/next/dist/client/router.d.ts","./node_modules/next/dist/client/route-loader.d.ts","./node_modules/next/dist/client/page-loader.d.ts","./node_modules/next/dist/shared/lib/bloom-filter.d.ts","./node_modules/next/dist/shared/lib/router/router.d.ts","./node_modules/next/dist/shared/lib/router-context.shared-runtime.d.ts","./node_modules/next/dist/shared/lib/loadable-context.shared-runtime.d.ts","./node_modules/next/dist/shared/lib/loadable.shared-runtime.d.ts","./node_modules/next/dist/shared/lib/image-config-context.shared-runtime.d.ts","./node_modules/next/dist/shared/lib/hooks-client-context.shared-runtime.d.ts","./node_modules/next/dist/shared/lib/head-manager-context.shared-runtime.d.ts","./node_modules/next/dist/server/future/route-definitions/app-page-route-definition.d.ts","./node_modules/next/dist/shared/lib/modern-browserslist-target.d.ts","./node_modules/next/dist/shared/lib/constants.d.ts","./node_modules/next/dist/build/webpack/loaders/metadata/types.d.ts","./node_modules/next/dist/build/page-extensions-type.d.ts","./node_modules/next/dist/build/webpack/loaders/next-app-loader.d.ts","./node_modules/next/dist/server/lib/app-dir-module.d.ts","./node_modules/next/dist/server/response-cache/types.d.ts","./node_modules/next/dist/server/response-cache/index.d.ts","./node_modules/next/dist/server/lib/incremental-cache/index.d.ts","./node_modules/next/dist/client/components/hooks-server-context.d.ts","./node_modules/next/dist/server/app-render/dynamic-rendering.d.ts","./node_modules/next/dist/client/components/static-generation-async-storage-instance.d.ts","./node_modules/next/dist/client/components/static-generation-async-storage.external.d.ts","./node_modules/next/dist/server/web/spec-extension/adapters/request-cookies.d.ts","./node_modules/next/dist/server/async-storage/draft-mode-provider.d.ts","./node_modules/next/dist/server/web/spec-extension/adapters/headers.d.ts","./node_modules/next/dist/client/components/request-async-storage-instance.d.ts","./node_modules/next/dist/client/components/request-async-storage.external.d.ts","./node_modules/next/dist/server/app-render/create-error-handler.d.ts","./node_modules/next/dist/server/app-render/app-render.d.ts","./node_modules/next/dist/shared/lib/server-inserted-html.shared-runtime.d.ts","./node_modules/next/dist/shared/lib/amp-context.shared-runtime.d.ts","./node_modules/next/dist/server/future/route-modules/app-page/vendored/contexts/entrypoints.d.ts","./node_modules/next/dist/server/future/route-modules/app-page/module.compiled.d.ts","./node_modules/@types/react/jsx-runtime.d.ts","./node_modules/next/dist/client/components/error-boundary.d.ts","./node_modules/next/dist/client/components/router-reducer/create-initial-router-state.d.ts","./node_modules/next/dist/client/components/app-router.d.ts","./node_modules/next/dist/client/components/layout-router.d.ts","./node_modules/next/dist/client/components/render-from-template-context.d.ts","./node_modules/next/dist/client/components/action-async-storage-instance.d.ts","./node_modules/next/dist/client/components/action-async-storage.external.d.ts","./node_modules/next/dist/client/components/client-page.d.ts","./node_modules/next/dist/client/components/search-params.d.ts","./node_modules/next/dist/client/components/not-found-boundary.d.ts","./node_modules/next/dist/server/app-render/rsc/preloads.d.ts","./node_modules/next/dist/server/app-render/rsc/postpone.d.ts","./node_modules/next/dist/server/app-render/rsc/taint.d.ts","./node_modules/next/dist/server/app-render/entry-base.d.ts","./node_modules/next/dist/build/templates/app-page.d.ts","./node_modules/next/dist/server/future/route-modules/app-page/module.d.ts","./node_modules/next/dist/server/lib/builtin-request-context.d.ts","./node_modules/next/dist/server/app-render/types.d.ts","./node_modules/next/dist/client/components/router-reducer/fetch-server-response.d.ts","./node_modules/next/dist/client/components/router-reducer/router-reducer-types.d.ts","./node_modules/next/dist/shared/lib/app-router-context.shared-runtime.d.ts","./node_modules/next/dist/server/future/route-modules/pages/vendored/contexts/entrypoints.d.ts","./node_modules/next/dist/server/future/route-modules/pages/module.compiled.d.ts","./node_modules/next/dist/build/templates/pages.d.ts","./node_modules/next/dist/server/future/route-modules/pages/module.d.ts","./node_modules/next/dist/server/render.d.ts","./node_modules/next/dist/server/future/route-definitions/pages-api-route-definition.d.ts","./node_modules/next/dist/server/future/route-matches/pages-api-route-match.d.ts","./node_modules/next/dist/server/future/route-matchers/route-matcher.d.ts","./node_modules/next/dist/server/future/route-matcher-providers/route-matcher-provider.d.ts","./node_modules/next/dist/server/future/route-matcher-managers/route-matcher-manager.d.ts","./node_modules/next/dist/server/future/normalizers/normalizer.d.ts","./node_modules/next/dist/server/future/normalizers/locale-route-normalizer.d.ts","./node_modules/next/dist/server/future/normalizers/request/pathname-normalizer.d.ts","./node_modules/next/dist/server/future/normalizers/request/suffix.d.ts","./node_modules/next/dist/server/future/normalizers/request/rsc.d.ts","./node_modules/next/dist/server/future/normalizers/request/prefix.d.ts","./node_modules/next/dist/server/future/normalizers/request/postponed.d.ts","./node_modules/next/dist/server/future/normalizers/request/action.d.ts","./node_modules/next/dist/server/future/normalizers/request/prefetch-rsc.d.ts","./node_modules/next/dist/server/future/normalizers/request/next-data.d.ts","./node_modules/next/dist/server/base-server.d.ts","./node_modules/next/dist/server/image-optimizer.d.ts","./node_modules/next/dist/server/next-server.d.ts","./node_modules/next/dist/lib/coalesced-function.d.ts","./node_modules/next/dist/server/lib/router-utils/types.d.ts","./node_modules/next/dist/trace/types.d.ts","./node_modules/next/dist/trace/trace.d.ts","./node_modules/next/dist/trace/shared.d.ts","./node_modules/next/dist/trace/index.d.ts","./node_modules/next/dist/build/load-jsconfig.d.ts","./node_modules/next/dist/build/webpack-config.d.ts","./node_modules/next/dist/build/webpack/plugins/define-env-plugin.d.ts","./node_modules/next/dist/build/swc/index.d.ts","./node_modules/next/dist/server/dev/parse-version-info.d.ts","./node_modules/next/dist/server/dev/hot-reloader-types.d.ts","./node_modules/next/dist/telemetry/storage.d.ts","./node_modules/next/dist/server/lib/types.d.ts","./node_modules/next/dist/server/lib/render-server.d.ts","./node_modules/next/dist/server/lib/router-server.d.ts","./node_modules/next/dist/shared/lib/router/utils/path-match.d.ts","./node_modules/next/dist/server/lib/router-utils/filesystem.d.ts","./node_modules/next/dist/server/lib/router-utils/setup-dev-bundler.d.ts","./node_modules/next/dist/server/lib/dev-bundler-service.d.ts","./node_modules/next/dist/server/dev/static-paths-worker.d.ts","./node_modules/next/dist/server/dev/next-dev-server.d.ts","./node_modules/next/dist/server/next.d.ts","./node_modules/next/dist/lib/metadata/types/alternative-urls-types.d.ts","./node_modules/next/dist/lib/metadata/types/extra-types.d.ts","./node_modules/next/dist/lib/metadata/types/metadata-types.d.ts","./node_modules/next/dist/lib/metadata/types/manifest-types.d.ts","./node_modules/next/dist/lib/metadata/types/opengraph-types.d.ts","./node_modules/next/dist/lib/metadata/types/twitter-types.d.ts","./node_modules/next/dist/lib/metadata/types/metadata-interface.d.ts","./node_modules/next/types/index.d.ts","./node_modules/next/dist/shared/lib/html-context.shared-runtime.d.ts","./node_modules/@next/env/dist/index.d.ts","./node_modules/next/dist/shared/lib/utils.d.ts","./node_modules/next/dist/pages/_app.d.ts","./node_modules/next/app.d.ts","./node_modules/next/dist/server/web/spec-extension/unstable-cache.d.ts","./node_modules/next/dist/server/web/spec-extension/revalidate.d.ts","./node_modules/next/dist/server/web/spec-extension/unstable-no-store.d.ts","./node_modules/next/cache.d.ts","./node_modules/next/dist/shared/lib/runtime-config.external.d.ts","./node_modules/next/config.d.ts","./node_modules/next/dist/pages/_document.d.ts","./node_modules/next/document.d.ts","./node_modules/next/dist/shared/lib/dynamic.d.ts","./node_modules/next/dynamic.d.ts","./node_modules/next/dist/pages/_error.d.ts","./node_modules/next/error.d.ts","./node_modules/next/dist/shared/lib/head.d.ts","./node_modules/next/head.d.ts","./node_modules/next/dist/client/components/draft-mode.d.ts","./node_modules/next/dist/client/components/headers.d.ts","./node_modules/next/headers.d.ts","./node_modules/next/dist/shared/lib/get-img-props.d.ts","./node_modules/next/dist/client/image-component.d.ts","./node_modules/next/dist/shared/lib/image-external.d.ts","./node_modules/next/image.d.ts","./node_modules/next/dist/client/link.d.ts","./node_modules/next/link.d.ts","./node_modules/next/dist/client/components/redirect-status-code.d.ts","./node_modules/next/dist/client/components/redirect.d.ts","./node_modules/next/dist/client/components/not-found.d.ts","./node_modules/next/dist/client/components/navigation.react-server.d.ts","./node_modules/next/dist/client/components/navigation.d.ts","./node_modules/next/navigation.d.ts","./node_modules/next/router.d.ts","./node_modules/next/dist/client/script.d.ts","./node_modules/next/script.d.ts","./node_modules/next/dist/server/web/spec-extension/user-agent.d.ts","./node_modules/next/dist/compiled/@edge-runtime/primitives/url.d.ts","./node_modules/next/dist/server/web/spec-extension/image-response.d.ts","./node_modules/next/dist/compiled/@vercel/og/satori/index.d.ts","./node_modules/next/dist/compiled/@vercel/og/emoji/index.d.ts","./node_modules/next/dist/compiled/@vercel/og/types.d.ts","./node_modules/next/server.d.ts","./node_modules/next/types/global.d.ts","./node_modules/next/types/compiled.d.ts","./node_modules/next/index.d.ts","./node_modules/next/image-types/global.d.ts","./next-env.d.ts","./src/lib/api.ts","./src/app/layout.tsx","./src/app/page.tsx","./src/components/authguard.tsx","./src/app/dashboard/page.tsx","./src/app/signin/page.tsx","./src/app/signup/page.tsx","./node_modules/@types/json5/index.d.ts"],"fileIdsList":[[64,110,373,374],[64,110],[64,107,110],[64,109,110],[110],[64,110,115,143],[64,110,111,116,121,129,140,151],[64,110,111,112,121,129],[59,60,61,64,110],[64,110,113,152],[64,110,114,115,122,130],[64,110,115,140,148],[64,110,116,118,121,129],[64,109,110,117],[64,110,118,119],[64,110,120,121],[64,109,110,121],[64,110,121,122,123,140,151],[64,110,121,122,123,136,140,143],[64,110,118,121,124,129,140,151],[64,110,121,122,124,125,129,140,148,151],[64,110,124,126,140,148,151],[62,63,64,65,66,67,68,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157],[64,110,121,127],[64,110,128,151,156],[64,110,118,121,129,140],[64,110,130],[64,110,131],[64,109,110,132],[64,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157],[64,110,134],[64,110,135],[64,110,121,136,137],[64,110,136,138,152,154],[64,110,121,140,141,143],[64,110,142,143],[64,110,140,141],[64,110,143],[64,110,144],[64,107,110,140,145],[64,110,121,146,147],[64,110,146,147],[64,110,115,129,140,148],[64,110,149],[64,110,129,150],[64,110,124,135,151],[64,110,115,152],[64,110,140,153],[64,110,128,154],[64,110,155],[64,105,110],[64,105,110,121,123,132,140,143,151,154,156],[64,110,140,157],[52,64,110,162,163,164],[52,64,110,162,163],[52,64,110],[52,56,64,110,161,326,369],[52,56,64,110,160,326,369],[49,50,51,64,110],[57,64,110],[64,110,330],[64,110,332,333,334],[64,110,336],[64,110,167,177,183,185,326],[64,110,167,174,176,179,197],[64,110,177],[64,110,177,179,304],[64,110,232,250,265,372],[64,110,274],[64,110,167,177,184,218,228,301,302,372],[64,110,184,372],[64,110,177,228,229,230,372],[64,110,177,184,218,372],[64,110,372],[64,110,167,184,185,372],[64,110,258],[64,109,110,158,257],[52,64,110,251,252,253,271,272],[52,64,110,251],[64,110,241],[64,110,240,242,346],[52,64,110,251,252,269],[64,110,247,272,358],[64,110,356,357],[64,110,191,355],[64,110,244],[64,109,110,158,191,207,240,241,242,243],[52,64,110,269,271,272],[64,110,269,271],[64,110,269,270,272],[64,110,135,158],[64,110,239],[64,109,110,158,176,178,235,236,237,238],[52,64,110,168,349],[52,64,110,151,158],[52,64,110,184,216],[52,64,110,184],[64,110,214,219],[52,64,110,215,329],[52,56,64,110,124,158,160,161,326,367,368],[64,110,326],[64,110,166],[64,110,319,320,321,322,323,324],[64,110,321],[52,64,110,215,251,329],[52,64,110,251,327,329],[52,64,110,251,329],[64,110,124,158,178,329],[64,110,124,158,175,176,187,205,207,239,244,245,267,269],[64,110,236,239,244,252,254,255,256,258,259,260,261,262,263,264,372],[64,110,237],[52,64,110,135,158,176,177,205,207,208,210,235,267,268,272,326,372],[64,110,124,158,178,179,191,192,240],[64,110,124,158,177,179],[64,110,124,140,158,175,178,179],[64,110,124,135,151,158,175,176,177,178,179,184,187,188,198,199,201,204,205,207,208,209,210,234,235,268,269,277,279,282,284,287,289,290,291,292],[64,110,124,140,158],[64,110,167,168,169,175,176,326,329,372],[64,110,124,140,151,158,172,303,305,306,372],[64,110,135,151,158,172,175,178,195,199,201,202,203,208,235,282,293,295,301,315,316],[64,110,177,181,235],[64,110,175,177],[64,110,188,283],[64,110,285,286],[64,110,285],[64,110,283],[64,110,285,288],[64,110,171,172],[64,110,171,211],[64,110,171],[64,110,173,188,281],[64,110,280],[64,110,172,173],[64,110,173,278],[64,110,172],[64,110,267],[64,110,124,158,175,187,206,226,232,246,249,266,269],[64,110,220,221,222,223,224,225,247,248,272,327],[64,110,276],[64,110,124,158,175,187,206,212,273,275,277,326,329],[64,110,124,151,158,168,175,177,234],[64,110,231],[64,110,124,158,309,314],[64,110,198,207,234,329],[64,110,297,301,315,318],[64,110,124,181,301,309,310,318],[64,110,167,177,198,209,312],[64,110,124,158,177,184,209,296,297,307,308,311,313],[64,110,159,205,206,207,326,329],[64,110,124,135,151,158,173,175,176,178,181,186,187,195,198,199,201,202,203,204,208,210,234,235,279,293,294,329],[64,110,124,158,175,177,181,295,317],[64,110,124,158,176,178],[52,64,110,124,135,158,166,168,175,176,179,187,204,205,207,208,210,276,326,329],[64,110,124,135,151,158,170,173,174,178],[64,110,171,233],[64,110,124,158,171,176,187],[64,110,124,158,177,188],[64,110,124,158],[64,110,191],[64,110,190],[64,110,192],[64,110,177,189,191,195],[64,110,177,189,191],[64,110,124,158,170,177,178,184,192,193,194],[52,64,110,269,270,271],[64,110,227],[52,64,110,168],[52,64,110,201],[52,64,110,159,204,207,210,326,329],[64,110,168,349,350],[52,64,110,219],[52,64,110,135,151,158,166,213,215,217,218,329],[64,110,178,184,201],[64,110,200],[52,64,110,122,124,135,158,166,219,228,326,327,328],[48,52,53,54,55,64,110,160,161,326,369],[64,110,115],[64,110,298,299,300],[64,110,298],[64,110,338],[64,110,340],[64,110,342],[64,110,344],[64,110,347],[64,110,351],[56,58,64,110,326,331,335,337,339,341,343,345,348,352,354,360,361,363,370,371,372],[64,110,353],[64,110,359],[64,110,215],[64,110,362],[64,109,110,192,193,194,195,364,365,366,369],[64,110,158],[52,56,64,110,124,126,135,158,160,161,162,164,166,179,318,325,329,369],[64,77,81,110,151],[64,77,110,140,151],[64,72,110],[64,74,77,110,148,151],[64,110,129,148],[64,72,110,158],[64,74,77,110,129,151],[64,69,70,73,76,110,121,140,151],[64,77,84,110],[64,69,75,110],[64,77,98,99,110],[64,73,77,110,143,151,158],[64,98,110,158],[64,71,72,110,158],[64,77,110],[64,71,72,73,74,75,76,77,78,79,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,99,100,101,102,103,104,110],[64,77,92,110],[64,77,84,85,110],[64,75,77,85,86,110],[64,76,110],[64,69,72,77,110],[64,77,81,85,86,110],[64,81,110],[64,75,77,80,110,151],[64,69,74,77,84,110],[64,110,140],[64,72,77,98,110,156,158],[64,110,360,376,379],[64,110,373],[52,64,110,360,376]],"fileInfos":[{"version":"c430d44666289dae81f30fa7b2edebf186ecc91a2d4c71266ea6ae76388792e1","affectsGlobalScope":true,"impliedFormat":1},{"version":"45b7ab580deca34ae9729e97c13cfd999df04416a79116c3bfb483804f85ded4","impliedFormat":1},{"version":"3facaf05f0c5fc569c5649dd359892c98a85557e3e0c847964caeb67076f4d75","impliedFormat":1},{"version":"e44bb8bbac7f10ecc786703fe0a6a4b952189f908707980ba8f3c8975a760962","impliedFormat":1},{"version":"5e1c4c362065a6b95ff952c0eab010f04dcd2c3494e813b493ecfd4fcb9fc0d8","impliedFormat":1},{"version":"68d73b4a11549f9c0b7d352d10e91e5dca8faa3322bfb77b661839c42b1ddec7","impliedFormat":1},{"version":"5efce4fc3c29ea84e8928f97adec086e3dc876365e0982cc8479a07954a3efd4","impliedFormat":1},{"version":"080941d9f9ff9307f7e27a83bcd888b7c8270716c39af943532438932ec1d0b9","affectsGlobalScope":true,"impliedFormat":1},{"version":"2e80ee7a49e8ac312cc11b77f1475804bee36b3b2bc896bead8b6e1266befb43","affectsGlobalScope":true,"impliedFormat":1},{"version":"c57796738e7f83dbc4b8e65132f11a377649c00dd3eee333f672b8f0a6bea671","affectsGlobalScope":true,"impliedFormat":1},{"version":"dc2df20b1bcdc8c2d34af4926e2c3ab15ffe1160a63e58b7e09833f616efff44","affectsGlobalScope":true,"impliedFormat":1},{"version":"515d0b7b9bea2e31ea4ec968e9edd2c39d3eebf4a2d5cbd04e88639819ae3b71","affectsGlobalScope":true,"impliedFormat":1},{"version":"0559b1f683ac7505ae451f9a96ce4c3c92bdc71411651ca6ddb0e88baaaad6a3","affectsGlobalScope":true,"impliedFormat":1},{"version":"0dc1e7ceda9b8b9b455c3a2d67b0412feab00bd2f66656cd8850e8831b08b537","affectsGlobalScope":true,"impliedFormat":1},{"version":"ce691fb9e5c64efb9547083e4a34091bcbe5bdb41027e310ebba8f7d96a98671","affectsGlobalScope":true,"impliedFormat":1},{"version":"8d697a2a929a5fcb38b7a65594020fcef05ec1630804a33748829c5ff53640d0","affectsGlobalScope":true,"impliedFormat":1},{"version":"4ff2a353abf8a80ee399af572debb8faab2d33ad38c4b4474cff7f26e7653b8d","affectsGlobalScope":true,"impliedFormat":1},{"version":"fb0f136d372979348d59b3f5020b4cdb81b5504192b1cacff5d1fbba29378aa1","affectsGlobalScope":true,"impliedFormat":1},{"version":"d15bea3d62cbbdb9797079416b8ac375ae99162a7fba5de2c6c505446486ac0a","affectsGlobalScope":true,"impliedFormat":1},{"version":"68d18b664c9d32a7336a70235958b8997ebc1c3b8505f4f1ae2b7e7753b87618","affectsGlobalScope":true,"impliedFormat":1},{"version":"eb3d66c8327153d8fa7dd03f9c58d351107fe824c79e9b56b462935176cdf12a","affectsGlobalScope":true,"impliedFormat":1},{"version":"38f0219c9e23c915ef9790ab1d680440d95419ad264816fa15009a8851e79119","affectsGlobalScope":true,"impliedFormat":1},{"version":"69ab18c3b76cd9b1be3d188eaf8bba06112ebbe2f47f6c322b5105a6fbc45a2e","affectsGlobalScope":true,"impliedFormat":1},{"version":"a680117f487a4d2f30ea46f1b4b7f58bef1480456e18ba53ee85c2746eeca012","affectsGlobalScope":true,"impliedFormat":1},{"version":"2f11ff796926e0832f9ae148008138ad583bd181899ab7dd768a2666700b1893","affectsGlobalScope":true,"impliedFormat":1},{"version":"4de680d5bb41c17f7f68e0419412ca23c98d5749dcaaea1896172f06435891fc","affectsGlobalScope":true,"impliedFormat":1},{"version":"954296b30da6d508a104a3a0b5d96b76495c709785c1d11610908e63481ee667","affectsGlobalScope":true,"impliedFormat":1},{"version":"ac9538681b19688c8eae65811b329d3744af679e0bdfa5d842d0e32524c73e1c","affectsGlobalScope":true,"impliedFormat":1},{"version":"0a969edff4bd52585473d24995c5ef223f6652d6ef46193309b3921d65dd4376","affectsGlobalScope":true,"impliedFormat":1},{"version":"9e9fbd7030c440b33d021da145d3232984c8bb7916f277e8ffd3dc2e3eae2bdb","affectsGlobalScope":true,"impliedFormat":1},{"version":"811ec78f7fefcabbda4bfa93b3eb67d9ae166ef95f9bff989d964061cbf81a0c","affectsGlobalScope":true,"impliedFormat":1},{"version":"717937616a17072082152a2ef351cb51f98802fb4b2fdabd32399843875974ca","affectsGlobalScope":true,"impliedFormat":1},{"version":"d7e7d9b7b50e5f22c915b525acc5a49a7a6584cf8f62d0569e557c5cfc4b2ac2","affectsGlobalScope":true,"impliedFormat":1},{"version":"71c37f4c9543f31dfced6c7840e068c5a5aacb7b89111a4364b1d5276b852557","affectsGlobalScope":true,"impliedFormat":1},{"version":"576711e016cf4f1804676043e6a0a5414252560eb57de9faceee34d79798c850","affectsGlobalScope":true,"impliedFormat":1},{"version":"89c1b1281ba7b8a96efc676b11b264de7a8374c5ea1e6617f11880a13fc56dc6","affectsGlobalScope":true,"impliedFormat":1},{"version":"74f7fa2d027d5b33eb0471c8e82a6c87216223181ec31247c357a3e8e2fddc5b","affectsGlobalScope":true,"impliedFormat":1},{"version":"d6d7ae4d1f1f3772e2a3cde568ed08991a8ae34a080ff1151af28b7f798e22ca","affectsGlobalScope":true,"impliedFormat":1},{"version":"063600664504610fe3e99b717a1223f8b1900087fab0b4cad1496a114744f8df","affectsGlobalScope":true,"impliedFormat":1},{"version":"934019d7e3c81950f9a8426d093458b65d5aff2c7c1511233c0fd5b941e608ab","affectsGlobalScope":true,"impliedFormat":1},{"version":"52ada8e0b6e0482b728070b7639ee42e83a9b1c22d205992756fe020fd9f4a47","affectsGlobalScope":true,"impliedFormat":1},{"version":"3bdefe1bfd4d6dee0e26f928f93ccc128f1b64d5d501ff4a8cf3c6371200e5e6","affectsGlobalScope":true,"impliedFormat":1},{"version":"59fb2c069260b4ba00b5643b907ef5d5341b167e7d1dbf58dfd895658bda2867","affectsGlobalScope":true,"impliedFormat":1},{"version":"639e512c0dfc3fad96a84caad71b8834d66329a1f28dc95e3946c9b58176c73a","affectsGlobalScope":true,"impliedFormat":1},{"version":"368af93f74c9c932edd84c58883e736c9e3d53cec1fe24c0b0ff451f529ceab1","affectsGlobalScope":true,"impliedFormat":1},{"version":"8e7f8264d0fb4c5339605a15daadb037bf238c10b654bb3eee14208f860a32ea","affectsGlobalScope":true,"impliedFormat":1},{"version":"782dec38049b92d4e85c1585fbea5474a219c6984a35b004963b00beb1aab538","affectsGlobalScope":true,"impliedFormat":1},{"version":"0990a7576222f248f0a3b888adcb7389f957928ce2afb1cd5128169086ff4d29","impliedFormat":1},{"version":"eb5b19b86227ace1d29ea4cf81387279d04bb34051e944bc53df69f58914b788","affectsGlobalScope":true,"impliedFormat":1},{"version":"ac51dd7d31333793807a6abaa5ae168512b6131bd41d9c5b98477fc3b7800f9f","impliedFormat":1},{"version":"87d9d29dbc745f182683f63187bf3d53fd8673e5fca38ad5eaab69798ed29fbc","impliedFormat":1},{"version":"7a3aa194cfd5919c4da251ef04ea051077e22702638d4edcb9579e9101653519","affectsGlobalScope":true,"impliedFormat":1},{"version":"cc69795d9954ee4ad57545b10c7bf1a7260d990231b1685c147ea71a6faa265c","impliedFormat":1},{"version":"8bc6c94ff4f2af1f4023b7bb2379b08d3d7dd80c698c9f0b07431ea16101f05f","impliedFormat":1},{"version":"1b61d259de5350f8b1e5db06290d31eaebebc6baafd5f79d314b5af9256d7153","impliedFormat":1},{"version":"57194e1f007f3f2cbef26fa299d4c6b21f4623a2eddc63dfeef79e38e187a36e","impliedFormat":1},{"version":"0f6666b58e9276ac3a38fdc80993d19208442d6027ab885580d93aec76b4ef00","impliedFormat":1},{"version":"05fd364b8ef02fb1e174fbac8b825bdb1e5a36a016997c8e421f5fab0a6da0a0","impliedFormat":1},{"version":"70521b6ab0dcba37539e5303104f29b721bfb2940b2776da4cc818c07e1fefc1","affectsGlobalScope":true,"impliedFormat":1},{"version":"ab41ef1f2cdafb8df48be20cd969d875602483859dc194e9c97c8a576892c052","affectsGlobalScope":true,"impliedFormat":1},{"version":"d153a11543fd884b596587ccd97aebbeed950b26933ee000f94009f1ab142848","affectsGlobalScope":true,"impliedFormat":1},{"version":"21d819c173c0cf7cc3ce57c3276e77fd9a8a01d35a06ad87158781515c9a438a","impliedFormat":1},{"version":"98cffbf06d6bab333473c70a893770dbe990783904002c4f1a960447b4b53dca","affectsGlobalScope":true,"impliedFormat":1},{"version":"ba481bca06f37d3f2c137ce343c7d5937029b2468f8e26111f3c9d9963d6568d","affectsGlobalScope":true,"impliedFormat":1},{"version":"6d9ef24f9a22a88e3e9b3b3d8c40ab1ddb0853f1bfbd5c843c37800138437b61","affectsGlobalScope":true,"impliedFormat":1},{"version":"1db0b7dca579049ca4193d034d835f6bfe73096c73663e5ef9a0b5779939f3d0","affectsGlobalScope":true,"impliedFormat":1},{"version":"9798340ffb0d067d69b1ae5b32faa17ab31b82466a3fc00d8f2f2df0c8554aaa","affectsGlobalScope":true,"impliedFormat":1},{"version":"f26b11d8d8e4b8028f1c7d618b22274c892e4b0ef5b3678a8ccbad85419aef43","affectsGlobalScope":true,"impliedFormat":1},{"version":"5929864ce17fba74232584d90cb721a89b7ad277220627cc97054ba15a98ea8f","impliedFormat":1},{"version":"763fe0f42b3d79b440a9b6e51e9ba3f3f91352469c1e4b3b67bfa4ff6352f3f4","impliedFormat":1},{"version":"25c8056edf4314820382a5fdb4bb7816999acdcb929c8f75e3f39473b87e85bc","impliedFormat":1},{"version":"c464d66b20788266e5353b48dc4aa6bc0dc4a707276df1e7152ab0c9ae21fad8","impliedFormat":1},{"version":"78d0d27c130d35c60b5e5566c9f1e5be77caf39804636bc1a40133919a949f21","impliedFormat":1},{"version":"c6fd2c5a395f2432786c9cb8deb870b9b0e8ff7e22c029954fabdd692bff6195","impliedFormat":1},{"version":"1d6e127068ea8e104a912e42fc0a110e2aa5a66a356a917a163e8cf9a65e4a75","impliedFormat":1},{"version":"5ded6427296cdf3b9542de4471d2aa8d3983671d4cac0f4bf9c637208d1ced43","impliedFormat":1},{"version":"7f182617db458e98fc18dfb272d40aa2fff3a353c44a89b2c0ccb3937709bfb5","impliedFormat":1},{"version":"cadc8aced301244057c4e7e73fbcae534b0f5b12a37b150d80e5a45aa4bebcbd","impliedFormat":1},{"version":"385aab901643aa54e1c36f5ef3107913b10d1b5bb8cbcd933d4263b80a0d7f20","impliedFormat":1},{"version":"9670d44354bab9d9982eca21945686b5c24a3f893db73c0dae0fd74217a4c219","impliedFormat":1},{"version":"0b8a9268adaf4da35e7fa830c8981cfa22adbbe5b3f6f5ab91f6658899e657a7","impliedFormat":1},{"version":"11396ed8a44c02ab9798b7dca436009f866e8dae3c9c25e8c1fbc396880bf1bb","impliedFormat":1},{"version":"ba7bc87d01492633cb5a0e5da8a4a42a1c86270e7b3d2dea5d156828a84e4882","impliedFormat":1},{"version":"4893a895ea92c85345017a04ed427cbd6a1710453338df26881a6019432febdd","impliedFormat":1},{"version":"c21dc52e277bcfc75fac0436ccb75c204f9e1b3fa5e12729670910639f27343e","impliedFormat":1},{"version":"13f6f39e12b1518c6650bbb220c8985999020fe0f21d818e28f512b7771d00f9","impliedFormat":1},{"version":"9b5369969f6e7175740bf51223112ff209f94ba43ecd3bb09eefff9fd675624a","impliedFormat":1},{"version":"4fe9e626e7164748e8769bbf74b538e09607f07ed17c2f20af8d680ee49fc1da","impliedFormat":1},{"version":"24515859bc0b836719105bb6cc3d68255042a9f02a6022b3187948b204946bd2","impliedFormat":1},{"version":"ea0148f897b45a76544ae179784c95af1bd6721b8610af9ffa467a518a086a43","impliedFormat":1},{"version":"24c6a117721e606c9984335f71711877293a9651e44f59f3d21c1ea0856f9cc9","impliedFormat":1},{"version":"dd3273ead9fbde62a72949c97dbec2247ea08e0c6952e701a483d74ef92d6a17","impliedFormat":1},{"version":"405822be75ad3e4d162e07439bac80c6bcc6dbae1929e179cf467ec0b9ee4e2e","impliedFormat":1},{"version":"0db18c6e78ea846316c012478888f33c11ffadab9efd1cc8bcc12daded7a60b6","impliedFormat":1},{"version":"e61be3f894b41b7baa1fbd6a66893f2579bfad01d208b4ff61daef21493ef0a8","impliedFormat":1},{"version":"bd0532fd6556073727d28da0edfd1736417a3f9f394877b6d5ef6ad88fba1d1a","impliedFormat":1},{"version":"89167d696a849fce5ca508032aabfe901c0868f833a8625d5a9c6e861ef935d2","impliedFormat":1},{"version":"615ba88d0128ed16bf83ef8ccbb6aff05c3ee2db1cc0f89ab50a4939bfc1943f","impliedFormat":1},{"version":"a4d551dbf8746780194d550c88f26cf937caf8d56f102969a110cfaed4b06656","impliedFormat":1},{"version":"8bd86b8e8f6a6aa6c49b71e14c4ffe1211a0e97c80f08d2c8cc98838006e4b88","impliedFormat":1},{"version":"317e63deeb21ac07f3992f5b50cdca8338f10acd4fbb7257ebf56735bf52ab00","impliedFormat":1},{"version":"4732aec92b20fb28c5fe9ad99521fb59974289ed1e45aecb282616202184064f","impliedFormat":1},{"version":"2e85db9e6fd73cfa3d7f28e0ab6b55417ea18931423bd47b409a96e4a169e8e6","impliedFormat":1},{"version":"c46e079fe54c76f95c67fb89081b3e399da2c7d109e7dca8e4b58d83e332e605","impliedFormat":1},{"version":"bf67d53d168abc1298888693338cb82854bdb2e69ef83f8a0092093c2d562107","impliedFormat":1},{"version":"2cbe0621042e2a68c7cbce5dfed3906a1862a16a7d496010636cdbdb91341c0f","affectsGlobalScope":true,"impliedFormat":1},{"version":"e2677634fe27e87348825bb041651e22d50a613e2fdf6a4a3ade971d71bac37e","impliedFormat":1},{"version":"7394959e5a741b185456e1ef5d64599c36c60a323207450991e7a42e08911419","impliedFormat":1},{"version":"8c0bcd6c6b67b4b503c11e91a1fb91522ed585900eab2ab1f61bba7d7caa9d6f","impliedFormat":1},{"version":"8cd19276b6590b3ebbeeb030ac271871b9ed0afc3074ac88a94ed2449174b776","affectsGlobalScope":true,"impliedFormat":1},{"version":"696eb8d28f5949b87d894b26dc97318ef944c794a9a4e4f62360cd1d1958014b","impliedFormat":1},{"version":"3f8fa3061bd7402970b399300880d55257953ee6d3cd408722cb9ac20126460c","impliedFormat":1},{"version":"35ec8b6760fd7138bbf5809b84551e31028fb2ba7b6dc91d95d098bf212ca8b4","affectsGlobalScope":true,"impliedFormat":1},{"version":"5524481e56c48ff486f42926778c0a3cce1cc85dc46683b92b1271865bcf015a","impliedFormat":1},{"version":"68bd56c92c2bd7d2339457eb84d63e7de3bd56a69b25f3576e1568d21a162398","affectsGlobalScope":true,"impliedFormat":1},{"version":"3e93b123f7c2944969d291b35fed2af79a6e9e27fdd5faa99748a51c07c02d28","impliedFormat":1},{"version":"9d19808c8c291a9010a6c788e8532a2da70f811adb431c97520803e0ec649991","impliedFormat":1},{"version":"87aad3dd9752067dc875cfaa466fc44246451c0c560b820796bdd528e29bef40","impliedFormat":1},{"version":"4aacb0dd020eeaef65426153686cc639a78ec2885dc72ad220be1d25f1a439df","impliedFormat":1},{"version":"f0bd7e6d931657b59605c44112eaf8b980ba7f957a5051ed21cb93d978cf2f45","impliedFormat":1},{"version":"8db0ae9cb14d9955b14c214f34dae1b9ef2baee2fe4ce794a4cd3ac2531e3255","affectsGlobalScope":true,"impliedFormat":1},{"version":"15fc6f7512c86810273af28f224251a5a879e4261b4d4c7e532abfbfc3983134","impliedFormat":1},{"version":"58adba1a8ab2d10b54dc1dced4e41f4e7c9772cbbac40939c0dc8ce2cdb1d442","impliedFormat":1},{"version":"2fd4c143eff88dabb57701e6a40e02a4dbc36d5eb1362e7964d32028056a782b","impliedFormat":1},{"version":"714435130b9015fae551788df2a88038471a5a11eb471f27c4ede86552842bc9","impliedFormat":1},{"version":"855cd5f7eb396f5f1ab1bc0f8580339bff77b68a770f84c6b254e319bbfd1ac7","impliedFormat":1},{"version":"5650cf3dace09e7c25d384e3e6b818b938f68f4e8de96f52d9c5a1b3db068e86","impliedFormat":1},{"version":"1354ca5c38bd3fd3836a68e0f7c9f91f172582ba30ab15bb8c075891b91502b7","affectsGlobalScope":true,"impliedFormat":1},{"version":"27fdb0da0daf3b337c5530c5f266efe046a6ceb606e395b346974e4360c36419","impliedFormat":1},{"version":"2d2fcaab481b31a5882065c7951255703ddbe1c0e507af56ea42d79ac3911201","impliedFormat":1},{"version":"a192fe8ec33f75edbc8d8f3ed79f768dfae11ff5735e7fe52bfa69956e46d78d","impliedFormat":1},{"version":"ca867399f7db82df981d6915bcbb2d81131d7d1ef683bc782b59f71dda59bc85","affectsGlobalScope":true,"impliedFormat":1},{"version":"d9e971bba9cf977c7774abbd4d2e3413a231af8a06a2e8b16af2a606bc91ddd0","affectsGlobalScope":true,"impliedFormat":1},{"version":"9e043a1bc8fbf2a255bccf9bf27e0f1caf916c3b0518ea34aa72357c0afd42ec","impliedFormat":1},{"version":"b4f70ec656a11d570e1a9edce07d118cd58d9760239e2ece99306ee9dfe61d02","impliedFormat":1},{"version":"3bc2f1e2c95c04048212c569ed38e338873f6a8593930cf5a7ef24ffb38fc3b6","impliedFormat":1},{"version":"6e70e9570e98aae2b825b533aa6292b6abd542e8d9f6e9475e88e1d7ba17c866","impliedFormat":1},{"version":"f9d9d753d430ed050dc1bf2667a1bab711ccbb1c1507183d794cc195a5b085cc","impliedFormat":1},{"version":"9eece5e586312581ccd106d4853e861aaaa1a39f8e3ea672b8c3847eedd12f6e","impliedFormat":1},{"version":"47ab634529c5955b6ad793474ae188fce3e6163e3a3fb5edd7e0e48f14435333","impliedFormat":1},{"version":"37ba7b45141a45ce6e80e66f2a96c8a5ab1bcef0fc2d0f56bb58df96ec67e972","impliedFormat":1},{"version":"45650f47bfb376c8a8ed39d4bcda5902ab899a3150029684ee4c10676d9fbaee","impliedFormat":1},{"version":"0225ecb9ed86bdb7a2c7fd01f1556906902929377b44483dc4b83e03b3ef227d","affectsGlobalScope":true,"impliedFormat":1},{"version":"74cf591a0f63db318651e0e04cb55f8791385f86e987a67fd4d2eaab8191f730","impliedFormat":1},{"version":"5eab9b3dc9b34f185417342436ec3f106898da5f4801992d8ff38ab3aff346b5","impliedFormat":1},{"version":"12ed4559eba17cd977aa0db658d25c4047067444b51acfdcbf38470630642b23","affectsGlobalScope":true,"impliedFormat":1},{"version":"f3ffabc95802521e1e4bcba4c88d8615176dc6e09111d920c7a213bdda6e1d65","impliedFormat":1},{"version":"f9ab232778f2842ffd6955f88b1049982fa2ecb764d129ee4893cbc290f41977","impliedFormat":1},{"version":"ae56f65caf3be91108707bd8dfbccc2a57a91feb5daabf7165a06a945545ed26","impliedFormat":1},{"version":"a136d5de521da20f31631a0a96bf712370779d1c05b7015d7019a9b2a0446ca9","impliedFormat":1},{"version":"c3b41e74b9a84b88b1dca61ec39eee25c0dbc8e7d519ba11bb070918cfacf656","affectsGlobalScope":true,"impliedFormat":1},{"version":"4737a9dc24d0e68b734e6cfbcea0c15a2cfafeb493485e27905f7856988c6b29","affectsGlobalScope":true,"impliedFormat":1},{"version":"36d8d3e7506b631c9582c251a2c0b8a28855af3f76719b12b534c6edf952748d","impliedFormat":1},{"version":"1ca69210cc42729e7ca97d3a9ad48f2e9cb0042bada4075b588ae5387debd318","impliedFormat":1},{"version":"f5ebe66baaf7c552cfa59d75f2bfba679f329204847db3cec385acda245e574e","impliedFormat":1},{"version":"ed59add13139f84da271cafd32e2171876b0a0af2f798d0c663e8eeb867732cf","affectsGlobalScope":true,"impliedFormat":1},{"version":"05db535df8bdc30d9116fe754a3473d1b6479afbc14ae8eb18b605c62677d518","impliedFormat":1},{"version":"b1810689b76fd473bd12cc9ee219f8e62f54a7d08019a235d07424afbf074d25","impliedFormat":1},{"version":"8caa5c86be1b793cd5f599e27ecb34252c41e011980f7d61ae4989a149ff6ccc","impliedFormat":1},{"version":"91b0f6d01993021ecbe01eb076db6a3cf1b66359c1d99104f43436010e81afb5","impliedFormat":1},{"version":"d1bd4e51810d159899aad1660ccb859da54e27e08b8c9862b40cd36c1d9ff00f","impliedFormat":1},{"version":"17ed71200119e86ccef2d96b73b02ce8854b76ad6bd21b5021d4269bec527b5f","impliedFormat":1},{"version":"1cfa8647d7d71cb03847d616bd79320abfc01ddea082a49569fda71ac5ece66b","impliedFormat":1},{"version":"bb7a61dd55dc4b9422d13da3a6bb9cc5e89be888ef23bbcf6558aa9726b89a1c","impliedFormat":1},{"version":"db6d2d9daad8a6d83f281af12ce4355a20b9a3e71b82b9f57cddcca0a8964a96","impliedFormat":1},{"version":"cfe4ef4710c3786b6e23dae7c086c70b4f4835a2e4d77b75d39f9046106e83d3","impliedFormat":1},{"version":"cbea99888785d49bb630dcbb1613c73727f2b5a2cf02e1abcaab7bcf8d6bf3c5","impliedFormat":1},{"version":"3a8bddb66b659f6bd2ff641fc71df8a8165bafe0f4b799cc298be5cd3755bb20","impliedFormat":1},{"version":"a86f82d646a739041d6702101afa82dcb935c416dd93cbca7fd754fd0282ce1f","impliedFormat":1},{"version":"2dad084c67e649f0f354739ec7df7c7df0779a28a4f55c97c6b6883ae850d1ce","impliedFormat":1},{"version":"fa5bbc7ab4130dd8cdc55ea294ec39f76f2bc507a0f75f4f873e38631a836ca7","impliedFormat":1},{"version":"df45ca1176e6ac211eae7ddf51336dc075c5314bc5c253651bae639defd5eec5","impliedFormat":1},{"version":"cf86de1054b843e484a3c9300d62fbc8c97e77f168bbffb131d560ca0474d4a8","impliedFormat":1},{"version":"196c960b12253fde69b204aa4fbf69470b26daf7a430855d7f94107a16495ab0","impliedFormat":1},{"version":"ee15ea5dd7a9fc9f5013832e5843031817a880bf0f24f37a29fd8337981aae07","impliedFormat":1},{"version":"bf24f6d35f7318e246010ffe9924395893c4e96d34324cde77151a73f078b9ad","impliedFormat":1},{"version":"ea53732769832d0f127ae16620bd5345991d26bf0b74e85e41b61b27d74ea90f","impliedFormat":1},{"version":"10595c7ff5094dd5b6a959ccb1c00e6a06441b4e10a87bc09c15f23755d34439","impliedFormat":1},{"version":"9620c1ff645afb4a9ab4044c85c26676f0a93e8c0e4b593aea03a89ccb47b6d0","impliedFormat":1},{"version":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","impliedFormat":1},{"version":"a9af0e608929aaf9ce96bd7a7b99c9360636c31d73670e4af09a09950df97841","impliedFormat":1},{"version":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","impliedFormat":1},{"version":"c86fe861cf1b4c46a0fb7d74dffe596cf679a2e5e8b1456881313170f092e3fa","impliedFormat":1},{"version":"08ed0b3f0166787f84a6606f80aa3b1388c7518d78912571b203817406e471da","impliedFormat":1},{"version":"47e5af2a841356a961f815e7c55d72554db0c11b4cba4d0caab91f8717846a94","impliedFormat":1},{"version":"65f43099ded6073336e697512d9b80f2d4fec3182b7b2316abf712e84104db00","impliedFormat":1},{"version":"f5f541902bf7ae0512a177295de9b6bcd6809ea38307a2c0a18bfca72212f368","impliedFormat":1},{"version":"b0decf4b6da3ebc52ea0c96095bdfaa8503acc4ac8e9081c5f2b0824835dd3bd","impliedFormat":1},{"version":"ca1b882a105a1972f82cc58e3be491e7d750a1eb074ffd13b198269f57ed9e1b","impliedFormat":1},{"version":"fc3e1c87b39e5ba1142f27ec089d1966da168c04a859a4f6aab64dceae162c2b","impliedFormat":1},{"version":"3b414b99a73171e1c4b7b7714e26b87d6c5cb03d200352da5342ab4088a54c85","impliedFormat":1},{"version":"61888522cec948102eba94d831c873200aa97d00d8989fdfd2a3e0ee75ec65a2","impliedFormat":1},{"version":"4e10622f89fea7b05dd9b52fb65e1e2b5cbd96d4cca3d9e1a60bb7f8a9cb86a1","impliedFormat":1},{"version":"74b2a5e5197bd0f2e0077a1ea7c07455bbea67b87b0869d9786d55104006784f","impliedFormat":1},{"version":"59bf32919de37809e101acffc120596a9e45fdbab1a99de5087f31fdc36e2f11","impliedFormat":1},{"version":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","impliedFormat":1},{"version":"faa03dffb64286e8304a2ca96dd1317a77db6bfc7b3fb385163648f67e535d77","impliedFormat":1},{"version":"c40c848daad198266370c1c72a7a8c3d18d2f50727c7859fcfefd3ff69a7f288","impliedFormat":1},{"version":"ac60bbee0d4235643cc52b57768b22de8c257c12bd8c2039860540cab1fa1d82","impliedFormat":1},{"version":"6428e6edd944ce6789afdf43f9376c1f2e4957eea34166177625aaff4c0da1a0","impliedFormat":1},{"version":"ada39cbb2748ab2873b7835c90c8d4620723aedf323550e8489f08220e477c7f","impliedFormat":1},{"version":"6e5f5cee603d67ee1ba6120815497909b73399842254fc1e77a0d5cdc51d8c9c","impliedFormat":1},{"version":"8dba67056cbb27628e9b9a1cba8e57036d359dceded0725c72a3abe4b6c79cd4","impliedFormat":1},{"version":"70f3814c457f54a7efe2d9ce9d2686de9250bb42eb7f4c539bd2280a42e52d33","impliedFormat":1},{"version":"154dd2e22e1e94d5bc4ff7726706bc0483760bae40506bdce780734f11f7ec47","impliedFormat":1},{"version":"ef61792acbfa8c27c9bd113f02731e66229f7d3a169e3c1993b508134f1a58e0","impliedFormat":1},{"version":"9c82171d836c47486074e4ca8e059735bf97b205e70b196535b5efd40cbe1bc5","impliedFormat":1},{"version":"0131e203d8560edb39678abe10db42564a068f98c4ebd1ed9ffe7279c78b3c81","impliedFormat":1},{"version":"f6404e7837b96da3ea4d38c4f1a3812c96c9dcdf264e93d5bdb199f983a3ef4b","impliedFormat":1},{"version":"c5426dbfc1cf90532f66965a7aa8c1136a78d4d0f96d8180ecbfc11d7722f1a5","impliedFormat":1},{"version":"65a15fc47900787c0bd18b603afb98d33ede930bed1798fc984d5ebb78b26cf9","impliedFormat":1},{"version":"9d202701f6e0744adb6314d03d2eb8fc994798fc83d91b691b75b07626a69801","impliedFormat":1},{"version":"de9d2df7663e64e3a91bf495f315a7577e23ba088f2949d5ce9ec96f44fba37d","impliedFormat":1},{"version":"c7af78a2ea7cb1cd009cfb5bdb48cd0b03dad3b54f6da7aab615c2e9e9d570c5","impliedFormat":1},{"version":"1ee45496b5f8bdee6f7abc233355898e5bf9bd51255db65f5ff7ede617ca0027","impliedFormat":1},{"version":"8b8f00491431fe82f060dfe8c7f2180a9fb239f3d851527db909b83230e75882","affectsGlobalScope":true,"impliedFormat":1},{"version":"db01d18853469bcb5601b9fc9826931cc84cc1a1944b33cad76fd6f1e3d8c544","affectsGlobalScope":true,"impliedFormat":1},{"version":"dba114fb6a32b355a9cfc26ca2276834d72fe0e94cd2c3494005547025015369","impliedFormat":1},{"version":"903e299a28282fa7b714586e28409ed73c3b63f5365519776bf78e8cf173db36","affectsGlobalScope":true,"impliedFormat":1},{"version":"fa6c12a7c0f6b84d512f200690bfc74819e99efae69e4c95c4cd30f6884c526e","impliedFormat":1},{"version":"f1c32f9ce9c497da4dc215c3bc84b722ea02497d35f9134db3bb40a8d918b92b","impliedFormat":1},{"version":"b73c319af2cc3ef8f6421308a250f328836531ea3761823b4cabbd133047aefa","affectsGlobalScope":true,"impliedFormat":1},{"version":"e433b0337b8106909e7953015e8fa3f2d30797cea27141d1c5b135365bb975a6","impliedFormat":1},{"version":"dd3900b24a6a8745efeb7ad27629c0f8a626470ac229c1d73f1fe29d67e44dca","impliedFormat":1},{"version":"ddff7fc6edbdc5163a09e22bf8df7bef75f75369ebd7ecea95ba55c4386e2441","impliedFormat":1},{"version":"106c6025f1d99fd468fd8bf6e5bda724e11e5905a4076c5d29790b6c3745e50c","impliedFormat":1},{"version":"ec29be0737d39268696edcec4f5e97ce26f449fa9b7afc2f0f99a86def34a418","impliedFormat":1},{"version":"aeab39e8e0b1a3b250434c3b2bb8f4d17bbec2a9dbce5f77e8a83569d3d2cbc2","impliedFormat":1},{"version":"ec6cba1c02c675e4dd173251b156792e8d3b0c816af6d6ad93f1a55d674591aa","impliedFormat":1},{"version":"b620391fe8060cf9bedc176a4d01366e6574d7a71e0ac0ab344a4e76576fcbb8","impliedFormat":1},{"version":"d729408dfde75b451530bcae944cf89ee8277e2a9df04d1f62f2abfd8b03c1e1","impliedFormat":1},{"version":"e15d3c84d5077bb4a3adee4c791022967b764dc41cb8fa3cfa44d4379b2c95f5","impliedFormat":1},{"version":"5f58e28cd22e8fc1ac1b3bc6b431869f1e7d0b39e2c21fbf79b9fa5195a85980","impliedFormat":1},{"version":"e1fc1a1045db5aa09366be2b330e4ce391550041fc3e925f60998ca0b647aa97","impliedFormat":1},{"version":"63533978dcda286422670f6e184ac516805a365fb37a086eeff4309e812f1402","impliedFormat":1},{"version":"43ba4f2fa8c698f5c304d21a3ef596741e8e85a810b7c1f9b692653791d8d97a","impliedFormat":1},{"version":"31fb49ef3aa3d76f0beb644984e01eab0ea222372ea9b49bb6533be5722d756c","impliedFormat":1},{"version":"33cd131e1461157e3e06b06916b5176e7a8ec3fce15a5cfe145e56de744e07d2","impliedFormat":1},{"version":"889ef863f90f4917221703781d9723278db4122d75596b01c429f7c363562b86","impliedFormat":1},{"version":"3556cfbab7b43da96d15a442ddbb970e1f2fc97876d055b6555d86d7ac57dae5","impliedFormat":1},{"version":"437751e0352c6e924ddf30e90849f1d9eb00ca78c94d58d6a37202ec84eb8393","impliedFormat":1},{"version":"48e8af7fdb2677a44522fd185d8c87deff4d36ee701ea003c6c780b1407a1397","impliedFormat":1},{"version":"d11308de5a36c7015bb73adb5ad1c1bdaac2baede4cc831a05cf85efa3cc7f2f","impliedFormat":1},{"version":"38e4684c22ed9319beda6765bab332c724103d3a966c2e5e1c5a49cf7007845f","impliedFormat":1},{"version":"f9812cfc220ecf7557183379531fa409acd249b9e5b9a145d0d52b76c20862de","affectsGlobalScope":true,"impliedFormat":1},{"version":"e650298721abc4f6ae851e60ae93ee8199791ceec4b544c3379862f81f43178c","impliedFormat":1},{"version":"2e4f37ffe8862b14d8e24ae8763daaa8340c0df0b859d9a9733def0eee7562d9","impliedFormat":1},{"version":"13283350547389802aa35d9f2188effaeac805499169a06ef5cd77ce2a0bd63f","impliedFormat":1},{"version":"680793958f6a70a44c8d9ae7d46b7a385361c69ac29dcab3ed761edce1c14ab8","impliedFormat":1},{"version":"6ac6715916fa75a1f7ebdfeacac09513b4d904b667d827b7535e84ff59679aff","impliedFormat":1},{"version":"42c169fb8c2d42f4f668c624a9a11e719d5d07dacbebb63cbcf7ef365b0a75b3","impliedFormat":1},{"version":"913ddbba170240070bd5921b8f33ea780021bdf42fbdfcd4fcb2691b1884ddde","impliedFormat":1},{"version":"b4e6d416466999ff40d3fe5ceb95f7a8bfb7ac2262580287ac1a8391e5362431","impliedFormat":1},{"version":"5fe23bd829e6be57d41929ac374ee9551ccc3c44cee893167b7b5b77be708014","impliedFormat":1},{"version":"0a626484617019fcfbfc3c1bc1f9e84e2913f1adb73692aa9075817404fb41a1","impliedFormat":1},{"version":"438c7513b1df91dcef49b13cd7a1c4720f91a36e88c1df731661608b7c055f10","impliedFormat":1},{"version":"cf185cc4a9a6d397f416dd28cca95c227b29f0f27b160060a95c0e5e36cda865","impliedFormat":1},{"version":"0086f3e4ad898fd7ca56bb223098acfacf3fa065595182aaf0f6c4a6a95e6fbd","impliedFormat":1},{"version":"efaa078e392f9abda3ee8ade3f3762ab77f9c50b184e6883063a911742a4c96a","impliedFormat":1},{"version":"54a8bb487e1dc04591a280e7a673cdfb272c83f61e28d8a64cf1ac2e63c35c51","impliedFormat":1},{"version":"021a9498000497497fd693dd315325484c58a71b5929e2bbb91f419b04b24cea","impliedFormat":1},{"version":"9385cdc09850950bc9b59cca445a3ceb6fcca32b54e7b626e746912e489e535e","impliedFormat":1},{"version":"2894c56cad581928bb37607810af011764a2f511f575d28c9f4af0f2ef02d1ab","impliedFormat":1},{"version":"0a72186f94215d020cb386f7dca81d7495ab6c17066eb07d0f44a5bf33c1b21a","impliedFormat":1},{"version":"84124384abae2f6f66b7fbfc03862d0c2c0b71b826f7dbf42c8085d31f1d3f95","impliedFormat":1},{"version":"63a8e96f65a22604eae82737e409d1536e69a467bb738bec505f4f97cce9d878","impliedFormat":1},{"version":"3fd78152a7031315478f159c6a5872c712ece6f01212c78ea82aef21cb0726e2","impliedFormat":1},{"version":"b01bd582a6e41457bc56e6f0f9de4cb17f33f5f3843a7cf8210ac9c18472fb0f","impliedFormat":1},{"version":"58b49e5c1def740360b5ae22ae2405cfac295fee74abd88d74ac4ea42502dc03","impliedFormat":1},{"version":"512fc15cca3a35b8dbbf6e23fe9d07e6f87ad03c895acffd3087ce09f352aad0","impliedFormat":1},{"version":"9a0946d15a005832e432ea0cd4da71b57797efb25b755cc07f32274296d62355","impliedFormat":1},{"version":"a52ff6c0a149e9f370372fc3c715d7f2beee1f3bab7980e271a7ab7d313ec677","impliedFormat":1},{"version":"fd933f824347f9edd919618a76cdb6a0c0085c538115d9a287fa0c7f59957ab3","impliedFormat":1},{"version":"6ac6715916fa75a1f7ebdfeacac09513b4d904b667d827b7535e84ff59679aff","impliedFormat":1},{"version":"6a1aa3e55bdc50503956c5cd09ae4cd72e3072692d742816f65c66ca14f4dfdd","impliedFormat":1},{"version":"ab75cfd9c4f93ffd601f7ca1753d6a9d953bbedfbd7a5b3f0436ac8a1de60dfa","impliedFormat":1},{"version":"f95180f03d827525ca4f990f49e17ec67198c316dd000afbe564655141f725cd","impliedFormat":1},{"version":"b73cbf0a72c8800cf8f96a9acfe94f3ad32ca71342a8908b8ae484d61113f647","impliedFormat":1},{"version":"bae6dd176832f6423966647382c0d7ba9e63f8c167522f09a982f086cd4e8b23","impliedFormat":1},{"version":"1364f64d2fb03bbb514edc42224abd576c064f89be6a990136774ecdd881a1da","impliedFormat":1},{"version":"c9958eb32126a3843deedda8c22fb97024aa5d6dd588b90af2d7f2bfac540f23","impliedFormat":1},{"version":"950fb67a59be4c2dbe69a5786292e60a5cb0e8612e0e223537784c731af55db1","impliedFormat":1},{"version":"e927c2c13c4eaf0a7f17e6022eee8519eb29ef42c4c13a31e81a611ab8c95577","impliedFormat":1},{"version":"07ca44e8d8288e69afdec7a31fa408ce6ab90d4f3d620006701d5544646da6aa","impliedFormat":1},{"version":"70246ad95ad8a22bdfe806cb5d383a26c0c6e58e7207ab9c431f1cb175aca657","impliedFormat":1},{"version":"f00f3aa5d64ff46e600648b55a79dcd1333458f7a10da2ed594d9f0a44b76d0b","impliedFormat":1},{"version":"772d8d5eb158b6c92412c03228bd9902ccb1457d7a705b8129814a5d1a6308fc","impliedFormat":1},{"version":"4e4475fba4ed93a72f167b061cd94a2e171b82695c56de9899275e880e06ba41","impliedFormat":1},{"version":"97c5f5d580ab2e4decd0a3135204050f9b97cd7908c5a8fbc041eadede79b2fa","impliedFormat":1},{"version":"c99a3a5f2215d5b9d735aa04cec6e61ed079d8c0263248e298ffe4604d4d0624","impliedFormat":1},{"version":"49b2375c586882c3ac7f57eba86680ff9742a8d8cb2fe25fe54d1b9673690d41","impliedFormat":1},{"version":"802e797bcab5663b2c9f63f51bdf67eff7c41bc64c0fd65e6da3e7941359e2f7","impliedFormat":1},{"version":"847e160d709c74cc714fbe1f99c41d3425b74cd47b1be133df1623cd87014089","impliedFormat":1},{"version":"9fee04f1e1afa50524862289b9f0b0fdc3735b80e2a0d684cec3b9ff3d94cecc","impliedFormat":1},{"version":"5cdc27fbc5c166fc5c763a30ac21cbac9859dc5ba795d3230db6d4e52a1965bb","impliedFormat":1},{"version":"6459054aabb306821a043e02b89d54da508e3a6966601a41e71c166e4ea1474f","impliedFormat":1},{"version":"f416c9c3eee9d47ff49132c34f96b9180e50485d435d5748f0e8b72521d28d2e","impliedFormat":1},{"version":"05c97cddbaf99978f83d96de2d8af86aded9332592f08ce4a284d72d0952c391","impliedFormat":1},{"version":"14e5cdec6f8ae82dfd0694e64903a0a54abdfe37e1d966de3d4128362acbf35f","impliedFormat":1},{"version":"bbc183d2d69f4b59fd4dd8799ffdf4eb91173d1c4ad71cce91a3811c021bf80c","impliedFormat":1},{"version":"7b6ff760c8a240b40dab6e4419b989f06a5b782f4710d2967e67c695ef3e93c4","impliedFormat":1},{"version":"8dbc4134a4b3623fc476be5f36de35c40f2768e2e3d9ed437e0d5f1c4cd850f6","impliedFormat":1},{"version":"4e06330a84dec7287f7ebdd64978f41a9f70a668d3b5edc69d5d4a50b9b376bb","impliedFormat":1},{"version":"65bfa72967fbe9fc33353e1ac03f0480aa2e2ea346d61ff3ea997dfd850f641a","impliedFormat":1},{"version":"c06f0bb92d1a1a5a6c6e4b5389a5664d96d09c31673296cb7da5fe945d54d786","impliedFormat":1},{"version":"f974e4a06953682a2c15d5bd5114c0284d5abf8bc0fe4da25cb9159427b70072","impliedFormat":1},{"version":"872caaa31423f4345983d643e4649fb30f548e9883a334d6d1c5fff68ede22d4","impliedFormat":1},{"version":"94404c4a878fe291e7578a2a80264c6f18e9f1933fbb57e48f0eb368672e389c","impliedFormat":1},{"version":"5c1b7f03aa88be854bc15810bfd5bd5a1943c5a7620e1c53eddd2a013996343e","impliedFormat":1},{"version":"09dfc64fcd6a2785867f2368419859a6cc5a8d4e73cbe2538f205b1642eb0f51","impliedFormat":1},{"version":"bcf6f0a323653e72199105a9316d91463ad4744c546d1271310818b8cef7c608","impliedFormat":1},{"version":"01aa917531e116485beca44a14970834687b857757159769c16b228eb1e49c5f","impliedFormat":1},{"version":"351475f9c874c62f9b45b1f0dc7e2704e80dfd5f1af83a3a9f841f9dfe5b2912","impliedFormat":1},{"version":"ac457ad39e531b7649e7b40ee5847606eac64e236efd76c5d12db95bf4eacd17","impliedFormat":1},{"version":"187a6fdbdecb972510b7555f3caacb44b58415da8d5825d03a583c4b73fde4cf","impliedFormat":1},{"version":"d4c3250105a612202289b3a266bb7e323db144f6b9414f9dea85c531c098b811","impliedFormat":1},{"version":"95b444b8c311f2084f0fb51c616163f950fb2e35f4eaa07878f313a2d36c98a4","impliedFormat":1},{"version":"741067675daa6d4334a2dc80a4452ca3850e89d5852e330db7cb2b5f867173b1","impliedFormat":1},{"version":"f8acecec1114f11690956e007d920044799aefeb3cece9e7f4b1f8a1d542b2c9","impliedFormat":1},{"version":"178071ccd043967a58c5d1a032db0ddf9bd139e7920766b537d9783e88eb615e","impliedFormat":1},{"version":"3a17f09634c50cce884721f54fd9e7b98e03ac505889c560876291fcf8a09e90","impliedFormat":1},{"version":"32531dfbb0cdc4525296648f53b2b5c39b64282791e2a8c765712e49e6461046","impliedFormat":1},{"version":"0ce1b2237c1c3df49748d61568160d780d7b26693bd9feb3acb0744a152cd86d","impliedFormat":1},{"version":"e489985388e2c71d3542612685b4a7db326922b57ac880f299da7026a4e8a117","impliedFormat":1},{"version":"5cad4158616d7793296dd41e22e1257440910ea8d01c7b75045d4dfb20c5a41a","impliedFormat":1},{"version":"04d3aad777b6af5bd000bfc409907a159fe77e190b9d368da4ba649cdc28d39e","affectsGlobalScope":true,"impliedFormat":1},{"version":"74efc1d6523bd57eb159c18d805db4ead810626bc5bc7002a2c7f483044b2e0f","impliedFormat":1},{"version":"19252079538942a69be1645e153f7dbbc1ef56b4f983c633bf31fe26aeac32cd","impliedFormat":1},{"version":"bc11f3ac00ac060462597add171220aed628c393f2782ac75dd29ff1e0db871c","impliedFormat":1},{"version":"616775f16134fa9d01fc677ad3f76e68c051a056c22ab552c64cc281a9686790","impliedFormat":1},{"version":"65c24a8baa2cca1de069a0ba9fba82a173690f52d7e2d0f1f7542d59d5eb4db0","impliedFormat":1},{"version":"f9fe6af238339a0e5f7563acee3178f51db37f32a2e7c09f85273098cee7ec49","impliedFormat":1},{"version":"3b0b1d352b8d2e47f1c4df4fb0678702aee071155b12ef0185fce9eb4fa4af1e","impliedFormat":1},{"version":"77e71242e71ebf8528c5802993697878f0533db8f2299b4d36aa015bae08a79c","impliedFormat":1},{"version":"a344403e7a7384e0e7093942533d309194ad0a53eca2a3100c0b0ab4d3932773","impliedFormat":1},{"version":"b7fff2d004c5879cae335db8f954eb1d61242d9f2d28515e67902032723caeab","impliedFormat":1},{"version":"5f3dc10ae646f375776b4e028d2bed039a93eebbba105694d8b910feebbe8b9c","impliedFormat":1},{"version":"bb18bf4a61a17b4a6199eb3938ecfa4a59eb7c40843ad4a82b975ab6f7e3d925","impliedFormat":1},{"version":"4545c1a1ceca170d5d83452dd7c4994644c35cf676a671412601689d9a62da35","impliedFormat":1},{"version":"e9b6fc05f536dfddcdc65dbcf04e09391b1c968ab967382e48924f5cb90d88e1","impliedFormat":1},{"version":"a2d648d333cf67b9aeac5d81a1a379d563a8ffa91ddd61c6179f68de724260ff","impliedFormat":1},{"version":"2b664c3cc544d0e35276e1fb2d4989f7d4b4027ffc64da34ec83a6ccf2e5c528","impliedFormat":1},{"version":"a3f41ed1b4f2fc3049394b945a68ae4fdefd49fa1739c32f149d32c0545d67f5","impliedFormat":1},{"version":"3cd8f0464e0939b47bfccbb9bb474a6d87d57210e304029cd8eb59c63a81935d","impliedFormat":1},{"version":"47699512e6d8bebf7be488182427189f999affe3addc1c87c882d36b7f2d0b0e","impliedFormat":1},{"version":"3026abd48e5e312f2328629ede6e0f770d21c3cd32cee705c450e589d015ee09","impliedFormat":1},{"version":"8b140b398a6afbd17cc97c38aea5274b2f7f39b1ae5b62952cfe65bf493e3e75","impliedFormat":1},{"version":"7663d2c19ce5ef8288c790edba3d45af54e58c84f1b37b1249f6d49d962f3d91","impliedFormat":1},{"version":"5cce3b975cdb72b57ae7de745b3c5de5790781ee88bcb41ba142f07c0fa02e97","impliedFormat":1},{"version":"00bd6ebe607246b45296aa2b805bd6a58c859acecda154bfa91f5334d7c175c6","impliedFormat":1},{"version":"ad036a85efcd9e5b4f7dd5c1a7362c8478f9a3b6c3554654ca24a29aa850a9c5","impliedFormat":1},{"version":"fedebeae32c5cdd1a85b4e0504a01996e4a8adf3dfa72876920d3dd6e42978e7","impliedFormat":1},{"version":"0d28b974a7605c4eda20c943b3fa9ae16cb452c1666fc9b8c341b879992c7612","impliedFormat":1},{"version":"cdf21eee8007e339b1b9945abf4a7b44930b1d695cc528459e68a3adc39a622e","impliedFormat":1},{"version":"db036c56f79186da50af66511d37d9fe77fa6793381927292d17f81f787bb195","impliedFormat":1},{"version":"87ac2fb61e629e777f4d161dff534c2023ee15afd9cb3b1589b9b1f014e75c58","impliedFormat":1},{"version":"13c8b4348db91e2f7d694adc17e7438e6776bc506d5c8f5de9ad9989707fa3fe","impliedFormat":1},{"version":"3c1051617aa50b38e9efaabce25e10a5dd9b1f42e372ef0e8a674076a68742ed","impliedFormat":1},{"version":"07a3e20cdcb0f1182f452c0410606711fbea922ca76929a41aacb01104bc0d27","impliedFormat":1},{"version":"1de80059b8078ea5749941c9f863aa970b4735bdbb003be4925c853a8b6b4450","impliedFormat":1},{"version":"1d079c37fa53e3c21ed3fa214a27507bda9991f2a41458705b19ed8c2b61173d","impliedFormat":1},{"version":"4cd4b6b1279e9d744a3825cbd7757bbefe7f0708f3f1069179ad535f19e8ed2c","impliedFormat":1},{"version":"5835a6e0d7cd2738e56b671af0e561e7c1b4fb77751383672f4b009f4e161d70","impliedFormat":1},{"version":"c0eeaaa67c85c3bb6c52b629ebbfd3b2292dc67e8c0ffda2fc6cd2f78dc471e6","impliedFormat":1},{"version":"4b7f74b772140395e7af67c4841be1ab867c11b3b82a51b1aeb692822b76c872","impliedFormat":1},{"version":"27be6622e2922a1b412eb057faa854831b95db9db5035c3f6d4b677b902ab3b7","impliedFormat":1},{"version":"b95a6f019095dd1d48fd04965b50dfd63e5743a6e75478343c46d2582a5132bf","impliedFormat":99},{"version":"c2008605e78208cfa9cd70bd29856b72dda7ad89df5dc895920f8e10bcb9cd0a","impliedFormat":99},{"version":"b97cb5616d2ab82a98ec9ada7b9e9cabb1f5da880ec50ea2b8dc5baa4cbf3c16","impliedFormat":99},{"version":"d23df9ff06ae8bf1dcb7cc933e97ae7da418ac77749fecee758bb43a8d69f840","affectsGlobalScope":true,"impliedFormat":1},{"version":"040c71dde2c406f869ad2f41e8d4ce579cc60c8dbe5aa0dd8962ac943b846572","affectsGlobalScope":true,"impliedFormat":1},{"version":"3586f5ea3cc27083a17bd5c9059ede9421d587286d5a47f4341a4c2d00e4fa91","impliedFormat":1},{"version":"a6df929821e62f4719551f7955b9f42c0cd53c1370aec2dd322e24196a7dfe33","impliedFormat":1},{"version":"b789bf89eb19c777ed1e956dbad0925ca795701552d22e68fd130a032008b9f9","impliedFormat":1},"9dd9d642cdb87d4d5b3173217e0c45429b3e47a6f5cf5fb0ead6c644ec5fed01","af7a7cbb9cb2437f9c682b07b72939cb38de062ed56c5eeb40d608792250fd7b","1be71df59ecf4c54feef486fb16c1080a22b090bb5d901b6a201da1e98038da4","5bfcc49505efafda982641c418ca750d84a702d2e3313a321405e3927de190c8",{"version":"0c8307f6fbff58390baa1244d33495bc6c8f15ecb58adbb2201d2ee941aec13f","signature":"f508182e20953c59b7d92a7d561e77df25bf329b2e0bbfec0322ce3042eec885"},{"version":"33c3c3b360b370392a7cb37c5eec3f0ba9c64d53e1c7211e28910d20727f7433","signature":"6c45675928d5db83b67f6f8d0c2238049d5290a975c3d1c99b7d2cdf8b415168"},{"version":"14a6a70fa31a30d107c14f4b218e6c37f2bdd58e0e22f7b11725d16bfad7460a","signature":"0e1a01e31948d9dff3699bc0ed40cbbc514b38e6c577102f07486de8556fb431"},{"version":"f12755b47bb4369777da706bbf84df9f7adbeee2fa6862ca28b2d4a595cf54f1","signature":"bed8187286d7adb93a9ecb59cbab0d7e66062733b9c0c195e3d4b1811a3399d5"},{"version":"96d14f21b7652903852eef49379d04dbda28c16ed36468f8c9fa08f7c14c9538","impliedFormat":1}],"root":[[375,382]],"options":{"allowJs":true,"esModuleInterop":true,"jsx":1,"module":99,"skipLibCheck":true,"strict":true,"target":7},"referencedMap":[[375,1],[328,2],[383,2],[107,3],[108,3],[109,4],[64,5],[110,6],[111,7],[112,8],[59,2],[62,9],[60,2],[61,2],[113,10],[114,11],[115,12],[116,13],[117,14],[118,15],[119,15],[120,16],[121,17],[122,18],[123,19],[65,2],[63,2],[124,20],[125,21],[126,22],[158,23],[127,24],[128,25],[129,26],[130,27],[131,28],[132,29],[133,30],[134,31],[135,32],[136,33],[137,33],[138,34],[139,2],[140,35],[142,36],[141,37],[143,38],[144,39],[145,40],[146,41],[147,42],[148,43],[149,44],[150,45],[151,46],[152,47],[153,48],[154,49],[155,50],[66,2],[67,2],[68,2],[106,51],[156,52],[157,53],[51,2],[163,54],[164,55],[162,56],[160,57],[161,58],[49,2],[52,59],[251,56],[50,2],[58,60],[331,61],[335,62],[337,63],[184,64],[198,65],[302,66],[230,2],[305,67],[266,68],[275,69],[303,70],[185,71],[229,2],[231,72],[304,73],[205,74],[186,75],[210,74],[199,74],[169,74],[257,76],[258,77],[174,2],[254,78],[259,79],[346,80],[252,79],[347,81],[236,2],[255,82],[359,83],[358,84],[261,79],[357,2],[355,2],[356,85],[256,56],[243,86],[244,87],[253,88],[270,89],[271,90],[260,91],[238,92],[239,93],[350,94],[353,95],[217,96],[216,97],[215,98],[362,56],[214,99],[190,2],[365,2],[368,2],[367,56],[369,100],[165,2],[296,2],[197,101],[167,102],[319,2],[320,2],[322,2],[325,103],[321,2],[323,104],[324,104],[183,2],[196,2],[330,105],[338,106],[342,107],[179,108],[246,109],[245,2],[237,92],[265,110],[263,111],[262,2],[264,2],[269,112],[241,113],[178,114],[203,115],[293,116],[170,117],[177,118],[166,66],[307,119],[317,120],[306,2],[316,121],[204,2],[188,122],[284,123],[283,2],[290,124],[292,125],[285,126],[289,127],[291,124],[288,126],[287,124],[286,126],[226,128],[211,128],[278,129],[212,129],[172,130],[171,2],[282,131],[281,132],[280,133],[279,134],[173,135],[250,136],[267,137],[249,138],[274,139],[276,140],[273,138],[206,135],[159,2],[294,141],[232,142],[268,2],[315,143],[235,144],[310,145],[176,2],[311,146],[313,147],[314,148],[297,2],[309,117],[208,149],[295,150],[318,151],[180,2],[182,2],[187,152],[277,153],[175,154],[181,2],[234,155],[233,156],[189,157],[242,158],[240,159],[191,160],[193,161],[366,2],[192,162],[194,163],[333,2],[332,2],[334,2],[364,2],[195,164],[248,56],[57,2],[272,165],[218,2],[228,166],[207,2],[340,56],[349,167],[225,56],[344,79],[224,168],[327,169],[223,167],[168,2],[351,170],[221,56],[222,56],[213,2],[227,2],[220,171],[219,172],[209,173],[202,91],[312,2],[201,174],[200,2],[336,2],[247,56],[329,175],[48,2],[56,176],[53,56],[54,2],[55,2],[308,177],[301,178],[300,2],[299,179],[298,2],[339,180],[341,181],[343,182],[345,183],[348,184],[374,185],[352,185],[373,186],[354,187],[360,188],[361,189],[363,190],[370,191],[372,2],[371,192],[326,193],[46,2],[47,2],[8,2],[9,2],[11,2],[10,2],[2,2],[12,2],[13,2],[14,2],[15,2],[16,2],[17,2],[18,2],[19,2],[3,2],[20,2],[21,2],[4,2],[22,2],[26,2],[23,2],[24,2],[25,2],[27,2],[28,2],[29,2],[5,2],[30,2],[31,2],[32,2],[33,2],[6,2],[37,2],[34,2],[35,2],[36,2],[38,2],[7,2],[39,2],[44,2],[45,2],[40,2],[41,2],[42,2],[43,2],[1,2],[84,194],[94,195],[83,194],[104,196],[75,197],[74,198],[103,192],[97,199],[102,200],[77,201],[91,202],[76,203],[100,204],[72,205],[71,192],[101,206],[73,207],[78,208],[79,2],[82,208],[69,2],[105,209],[95,210],[86,211],[87,212],[89,213],[85,214],[88,215],[98,192],[80,216],[81,217],[90,218],[70,219],[93,210],[92,208],[96,2],[99,220],[380,221],[377,222],[378,2],[381,223],[382,223],[379,223],[376,2]],"affectedFilesPendingEmit":[380,377,378,381,382,379,376],"version":"5.9.3"}
 </file>
 
 <file path="docs/adr/0001-tech-stack.md">
@@ -483,6 +2428,15 @@ services:
       timeout: 3s
       retries: 10
 
+  goodreads-mock:
+    image: stoplight/prism:5
+    command: ["mock", "-h", "0.0.0.0", "/spec/goodreads-mock.yaml"]
+    ports:
+      - "4010:4010"
+    volumes:
+      - ../docs/openapi/goodreads-mock.yaml:/spec/goodreads-mock.yaml:ro
+      - ../mock:/spec/mock:ro
+
 volumes:
   postgres_data:
 </file>
@@ -523,23 +2477,1072 @@ trap 'echo "\nShutting down..."; kill $API_PID $WEB_PID; docker compose -f infra
 wait
 </file>
 
+<file path="services/api/alembic/versions/8399dceac96e_phase1_init_schema.py">
+"""phase1 init schema
+
+Revision ID: 8399dceac96e
+Revises:
+Create Date: 2025-12-22 20:48:21.235631
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+# revision identifiers, used by Alembic.
+revision: str = "8399dceac96e"
+down_revision: Union[str, Sequence[str], None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table(
+        "libraries",
+        sa.Column("id", sa.String(length=80), nullable=False),
+        sa.Column("name", sa.String(length=200), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_table(
+        "users",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("email", sa.String(length=320), nullable=False),
+        sa.Column("password_hash", sa.String(length=255), nullable=False),
+        sa.Column("is_active", sa.Boolean(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
+    op.create_table(
+        "shelf_sources",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("user_id", sa.String(length=36), nullable=False),
+        sa.Column("source_type", sa.String(length=20), nullable=False),
+        sa.Column("source_ref", sa.String(length=2000), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_shelf_sources_user_id"), "shelf_sources", ["user_id"], unique=False)
+    op.create_table(
+        "user_settings",
+        sa.Column("user_id", sa.String(length=36), nullable=False),
+        sa.Column("library_system", sa.String(length=200), nullable=True),
+        sa.Column("preferred_formats", sa.JSON(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("user_id"),
+    )
+    op.create_table(
+        "shelf_items",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("user_id", sa.String(length=36), nullable=False),
+        sa.Column("shelf_source_id", sa.String(length=36), nullable=True),
+        sa.Column("title", sa.String(length=600), nullable=False),
+        sa.Column("author", sa.String(length=400), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["shelf_source_id"], ["shelf_sources.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        op.f("ix_shelf_items_shelf_source_id"), "shelf_items", ["shelf_source_id"], unique=False
+    )
+    op.create_index(op.f("ix_shelf_items_user_id"), "shelf_items", ["user_id"], unique=False)
+    op.create_index(
+        "ix_shelf_items_user_title_author",
+        "shelf_items",
+        ["user_id", "title", "author"],
+        unique=False,
+    )
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index("ix_shelf_items_user_title_author", table_name="shelf_items")
+    op.drop_index(op.f("ix_shelf_items_user_id"), table_name="shelf_items")
+    op.drop_index(op.f("ix_shelf_items_shelf_source_id"), table_name="shelf_items")
+    op.drop_table("shelf_items")
+    op.drop_table("user_settings")
+    op.drop_index(op.f("ix_shelf_sources_user_id"), table_name="shelf_sources")
+    op.drop_table("shelf_sources")
+    op.drop_index(op.f("ix_users_email"), table_name="users")
+    op.drop_table("users")
+    op.drop_table("libraries")
+    # ### end Alembic commands ###
+</file>
+
+<file path="services/api/alembic/env.py">
+from __future__ import annotations
+
+import os
+from logging.config import fileConfig
+
+from alembic import context
+from app.models import Base  # noqa: F401
+from sqlalchemy import engine_from_config, pool
+
+config = context.config
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Point Alembic at your metadata
+target_metadata = Base.metadata
+
+DEFAULT_DATABASE_URL = "postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync"
+
+
+def get_database_url() -> str:
+    env_url = os.getenv("DATABASE_URL")
+    if env_url:
+        return env_url
+
+    ini_url = config.get_main_option("sqlalchemy.url")
+    if ini_url and ini_url != "driver://user:pass@localhost/dbname":
+        return ini_url
+
+    try:
+        from app.core.config import settings
+    except Exception:
+        return DEFAULT_DATABASE_URL
+
+    return settings.database_url
+
+
+def run_migrations_offline() -> None:
+    url = get_database_url()
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    configuration = config.get_section(config.config_ini_section) or {}
+    configuration["sqlalchemy.url"] = get_database_url()
+
+    connectable = engine_from_config(
+        configuration,
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    with connectable.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata)
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+</file>
+
+<file path="services/api/alembic/README">
+Generic single-database configuration.
+</file>
+
+<file path="services/api/alembic/script.py.mako">
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, Sequence[str], None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    ${downgrades if downgrades else "pass"}
+</file>
+
+<file path="services/api/app/api/routes/auth.py">
+from __future__ import annotations
+
+from app.api.deps import get_current_user
+from app.core.config import settings
+from app.core.security import create_access_token, hash_password, verify_password
+from app.db.session import get_db
+from app.models.user import User
+from app.models.user_settings import UserSettings
+from app.schemas.auth import LoginIn, SignUpIn, UserOut
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+DEMO_EMAIL = "demo@example.com"
+DEMO_PASSWORD = "password123"
+
+
+def _should_auto_create_demo(payload: LoginIn) -> bool:
+    return (
+        settings.env == "local"
+        and payload.email.lower() == DEMO_EMAIL
+        and payload.password == DEMO_PASSWORD
+    )
+
+
+@router.post("/signup", response_model=UserOut)
+def signup(payload: SignUpIn, response: Response, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.email == payload.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(email=payload.email, password_hash=hash_password(payload.password))
+    db.add(user)
+    db.flush()  # assigns user.id
+
+    # Create default settings row now so later phases can rely on it.
+    db.add(UserSettings(user_id=user.id, preferred_formats=["ebook"]))
+
+    db.commit()
+    db.refresh(user)
+
+    token = create_access_token(subject=user.id)
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=token,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite=settings.auth_cookie_samesite,
+        max_age=settings.auth_access_token_ttl_minutes * 60,
+        path="/",
+    )
+
+    return user
+
+
+@router.post("/login", response_model=UserOut)
+def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user:
+        if _should_auto_create_demo(payload):
+            user = User(email=DEMO_EMAIL, password_hash=hash_password(DEMO_PASSWORD))
+            db.add(user)
+            db.flush()  # assigns user.id
+            db.add(UserSettings(user_id=user.id, preferred_formats=["ebook"]))
+            db.commit()
+            db.refresh(user)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+            )
+    elif not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    token = create_access_token(subject=user.id)
+    response.set_cookie(
+        key=settings.auth_cookie_name,
+        value=token,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite=settings.auth_cookie_samesite,
+        max_age=settings.auth_access_token_ttl_minutes * 60,
+        path="/",
+    )
+
+    return user
+
+
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(key=settings.auth_cookie_name, path="/")
+    return {"ok": True}
+
+
+@router.get("/me", response_model=UserOut)
+def me(current_user: User = Depends(get_current_user)):
+    return current_user
+</file>
+
+<file path="services/api/app/api/routes/health.py">
+from fastapi import APIRouter
+
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health")
+def health_check():
+    return {"ok": True}
+</file>
+
 <file path="services/api/app/api/__init__.py">
 
+</file>
+
+<file path="services/api/app/api/deps.py">
+from __future__ import annotations
+
+from typing import Optional
+
+from app.core.config import settings
+from app.core.security import decode_access_token
+from app.db.session import get_db
+from app.models.user import User
+from fastapi import Depends, HTTPException, Request, status
+from jose import JWTError  # type: ignore[import-untyped]
+from sqlalchemy.orm import Session
+
+
+def _extract_bearer_token(request: Request) -> Optional[str]:
+    auth = request.headers.get("Authorization")
+    if not auth:
+        return None
+    parts = auth.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    scheme, token = parts
+    if scheme.lower() != "bearer":
+        return None
+    return token
+
+
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    # Allow either Authorization: Bearer <token> OR cookie-based auth
+    token = _extract_bearer_token(request) or request.cookies.get(settings.auth_cookie_name)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    try:
+        payload = decode_access_token(token)
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    except (JWTError, HTTPException):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    return user
+</file>
+
+<file path="services/api/app/core/config.py">
+from __future__ import annotations
+
+import importlib
+from typing import Any, Literal
+
+from pydantic import Field
+
+PydanticBaseSettings: Any
+PydanticSettingsConfigDict: Any
+_BaseSettings: Any
+_SettingsConfigDict: Any
+
+try:
+    pydantic_settings = importlib.import_module("pydantic_settings")
+    _BaseSettings = pydantic_settings.BaseSettings
+    _SettingsConfigDict = pydantic_settings.SettingsConfigDict
+    _USE_PYDANTIC_SETTINGS = True
+except ModuleNotFoundError:  # pragma: no cover - runtime fallback
+    try:
+        pydantic = importlib.import_module("pydantic")
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ModuleNotFoundError(
+            "pydantic-settings is required with pydantic v2; install it or downgrade to pydantic v1."
+        ) from exc
+
+    _BaseSettings = pydantic.BaseSettings
+    _SettingsConfigDict = None
+    _USE_PYDANTIC_SETTINGS = False
+
+PydanticBaseSettings = _BaseSettings
+PydanticSettingsConfigDict = _SettingsConfigDict
+
+
+class Settings(PydanticBaseSettings):
+    if _USE_PYDANTIC_SETTINGS:
+        model_config = PydanticSettingsConfigDict(
+            env_file=".env",
+            env_file_encoding="utf-8",
+            extra="ignore",
+            case_sensitive=False,
+        )
+    else:
+
+        class Config:
+            env_file = ".env"
+            env_file_encoding = "utf-8"
+            extra = "ignore"
+            case_sensitive = False
+
+    # Environment
+    env: str = Field(default="local", validation_alias="ENV")
+
+    # API
+    api_name: str = Field(default="ShelfSync API", validation_alias="API_NAME")
+
+    # Observability
+    otel_enabled: bool = Field(default=False, validation_alias="OTEL_ENABLED")
+
+    # Backing services
+    database_url: str = Field(
+        default="postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync",
+        validation_alias="DATABASE_URL",
+    )
+    redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
+    goodreads_base_url: str | None = Field(default=None, validation_alias="GOODREADS_BASE_URL")
+
+    # CORS
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:3000"], validation_alias="CORS_ORIGINS"
+    )
+
+    # Auth
+    auth_secret_key: str = Field(default="CHANGE_ME_IN_PROD", validation_alias="AUTH_SECRET_KEY")
+    auth_access_token_ttl_minutes: int = Field(
+        default=60 * 24 * 7, validation_alias="AUTH_ACCESS_TOKEN_TTL_MINUTES"
+    )
+
+    # Cookies
+    auth_cookie_name: str = Field(default="access_token", validation_alias="AUTH_COOKIE_NAME")
+    auth_cookie_secure: bool = Field(default=False, validation_alias="AUTH_COOKIE_SECURE")
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = Field(
+        default="lax",
+        validation_alias="AUTH_COOKIE_SAMESITE",
+    )
+
+
+settings = Settings()
+</file>
+
+<file path="services/api/app/core/security.py">
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from app.core.config import settings
+from jose import jwt  # type: ignore[import-untyped]
+from passlib.context import CryptContext  # type: ignore[import-untyped]
+
+
+def _build_password_context() -> CryptContext:
+    preferred = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
+    try:
+        preferred.hash("bcrypt-healthcheck")
+    except Exception:
+        return CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+    return preferred
+
+
+pwd_context = _build_password_context()
+ALGORITHM = "HS256"
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return pwd_context.verify(password, password_hash)
+
+
+def create_access_token(*, subject: str) -> str:
+    expires = datetime.now(timezone.utc) + timedelta(minutes=settings.auth_access_token_ttl_minutes)
+    payload = {"sub": subject, "exp": expires}
+    return jwt.encode(payload, settings.auth_secret_key, algorithm=ALGORITHM)
+
+
+def decode_access_token(token: str) -> dict:
+    return jwt.decode(token, settings.auth_secret_key, algorithms=[ALGORITHM])
+</file>
+
+<file path="services/api/app/db/session.py">
+from __future__ import annotations
+
+from typing import Generator
+
+from app.core.config import settings
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+engine = create_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+</file>
+
+<file path="services/api/app/models/__init__.py">
+from app.models.base import Base
+from app.models.library import Library
+from app.models.shelf_item import ShelfItem
+from app.models.shelf_source import ShelfSource
+from app.models.user import User
+from app.models.user_settings import UserSettings
+
+__all__ = [
+    "Base",
+    "User",
+    "UserSettings",
+    "ShelfSource",
+    "ShelfItem",
+    "Library",
+]
+</file>
+
+<file path="services/api/app/models/base.py">
+from __future__ import annotations
+
+from sqlalchemy.orm import DeclarativeBase
+
+
+class Base(DeclarativeBase):
+    pass
+</file>
+
+<file path="services/api/app/models/library.py">
+from __future__ import annotations
+
+from app.models.base import Base
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column
+
+
+class Library(Base):
+    __tablename__ = "libraries"
+
+    # A stable identifier you choose (later phases can replace with provider-driven IDs)
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+</file>
+
+<file path="services/api/app/models/shelf_item.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class ShelfItem(Base):
+    __tablename__ = "shelf_items"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "normalized_key", name="uq_shelf_item_user_normkey"),
+        Index("ix_shelf_items_user_normkey", "user_id", "normalized_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    shelf_source_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("shelf_sources.id", ondelete="SET NULL"), index=True
+    )
+
+    # Raw fields
+    title: Mapped[str] = mapped_column(String(600), nullable=False)
+    author: Mapped[str] = mapped_column(String(400), nullable=False)
+
+    # Optional identifiers (raw-ish, but sanitized)
+    isbn13: Mapped[str | None] = mapped_column(String(13), nullable=True)
+    isbn10: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    asin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Goodreads-specific metadata (optional)
+    goodreads_book_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # Normalized fields
+    normalized_title: Mapped[str] = mapped_column(String(600), nullable=False)
+    normalized_author: Mapped[str] = mapped_column(String(400), nullable=False)
+
+    # Always non-null. If ISBN exists, it is based on that; otherwise title+author.
+    normalized_key: Mapped[str] = mapped_column(String(1100), nullable=False)
+
+    # If true, later phases must fuzzy match to provider catalog.
+    needs_fuzzy_match: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    user = relationship("User", back_populates="shelf_items")
+    shelf_source = relationship("ShelfSource", back_populates="items")
+</file>
+
+<file path="services/api/app/models/shelf_source.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class ShelfSource(Base):
+    __tablename__ = "shelf_sources"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_type", "source_ref", name="uq_shelf_source_user_type_ref"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+
+    # "rss" | "csv"
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # RSS URL or a descriptive reference for uploads
+    source_ref: Mapped[str] = mapped_column(String(2000), nullable=False)
+
+    # Optional, user-facing label like "to-read"
+    shelf_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="shelf_sources")
+    items = relationship("ShelfItem", back_populates="shelf_source")
+</file>
+
+<file path="services/api/app/models/user_settings.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from app.models.base import Base
+from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    # Selected library system identifier (later phases can formalize this)
+    library_system: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Example: ["ebook", "audiobook"]
+    preferred_formats: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    user = relationship("User", back_populates="settings")
+</file>
+
+<file path="services/api/app/models/user.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from app.models.base import Base
+from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    settings = relationship(
+        "UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+    shelf_sources = relationship("ShelfSource", back_populates="user", cascade="all, delete-orphan")
+    shelf_items = relationship("ShelfItem", back_populates="user", cascade="all, delete-orphan")
+</file>
+
+<file path="services/api/app/schemas/auth.py">
+from __future__ import annotations
+
+from pydantic import BaseModel, EmailStr, Field
+
+
+class SignUpIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=200)
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserOut(BaseModel):
+    id: str
+    email: EmailStr
+
+    class Config:
+        from_attributes = True
 </file>
 
 <file path="services/api/app/__init__.py">
 
 </file>
 
-<file path="services/api/app/main.py">
-from fastapi import FastAPI
+<file path="services/api/bin/alembic">
+#!/usr/bin/env bash
+set -euo pipefail
 
-app = FastAPI(title="ShelfSync API")
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_DIR="$ROOT_DIR/.venv"
+PYTHON_BIN="$VENV_DIR/bin/python"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Expected a virtualenv at $VENV_DIR. Create it and install requirements first." >&2
+  exit 1
+fi
+
+cd "$ROOT_DIR"
+exec "$PYTHON_BIN" -m alembic "$@"
+</file>
+
+<file path="services/api/tests/conftest.py">
+import os
+
+import pytest
+from app.db.session import get_db
+from app.main import app
+from app.models import Base
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
-@app.get("/health")
-def health_check() -> dict[str, str]:
-    return {"status": "ok"}
+@pytest.fixture(scope="session")
+def engine():
+    # Prefer a dedicated Postgres DB for realism.
+    # Override at runtime: DATABASE_URL=... pytest
+    url = os.getenv("DATABASE_URL")
+    if url:
+        eng = create_engine(url, pool_pre_ping=True)
+    else:
+        # Default to in-memory SQLite so tests run without external services.
+        eng = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+
+    # For speed, create tables directly in tests.
+    # In CI, consider running `alembic upgrade head` and omitting create_all.
+    Base.metadata.create_all(bind=eng)
+    yield eng
+    Base.metadata.drop_all(bind=eng)
+
+
+@pytest.fixture()
+def db_session(engine):
+    connection = engine.connect()
+    tx = connection.begin()
+
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=connection)
+    session = TestingSessionLocal()
+
+    try:
+        yield session
+    finally:
+        session.close()
+        tx.rollback()
+        connection.close()
+
+
+@pytest.fixture()
+def client(db_session):
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+</file>
+
+<file path="services/api/tests/test_auth.py">
+def test_signup_sets_cookie_and_returns_user(client):
+    resp = client.post(
+        "/v1/auth/signup", json={"email": "a@example.com", "password": "password123"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["email"] == "a@example.com"
+    assert "set-cookie" in resp.headers
+
+
+def test_login_and_me(client):
+    client.post("/v1/auth/signup", json={"email": "b@example.com", "password": "password123"})
+
+    # logout to clear cookie
+    client.post("/v1/auth/logout")
+
+    resp = client.post("/v1/auth/login", json={"email": "b@example.com", "password": "password123"})
+    assert resp.status_code == 200
+
+    me = client.get("/v1/auth/me")
+    assert me.status_code == 200
+    assert me.json()["email"] == "b@example.com"
+
+
+def test_me_requires_auth(client):
+    resp = client.get("/v1/auth/me")
+    assert resp.status_code in (401, 403)
+
+
+def test_login_rejects_bad_password(client):
+    client.post("/v1/auth/signup", json={"email": "c@example.com", "password": "password123"})
+    resp = client.post("/v1/auth/login", json={"email": "c@example.com", "password": "wrongwrong"})
+    assert resp.status_code in (401, 403)
+
+
+def test_login_accepts_legacy_pbkdf2_hash(client, db_session):
+    from passlib.context import CryptContext
+
+    from app.models.user import User
+
+    legacy_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+    db_session.add(
+        User(email="legacy@example.com", password_hash=legacy_context.hash("password123"))
+    )
+    db_session.flush()
+
+    resp = client.post(
+        "/v1/auth/login", json={"email": "legacy@example.com", "password": "password123"}
+    )
+    assert resp.status_code == 200
+
+
+def test_login_auto_creates_demo_user(client):
+    resp = client.post(
+        "/v1/auth/login", json={"email": "demo@example.com", "password": "password123"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "demo@example.com"
+</file>
+
+<file path="services/api/alembic.ini">
+# A generic, single database configuration.
+
+[alembic]
+# path to migration scripts.
+# this is typically a path given in POSIX (e.g. forward slashes)
+# format, relative to the token %(here)s which refers to the location of this
+# ini file
+script_location = %(here)s/alembic
+
+# template used to generate migration file names; The default value is %%(rev)s_%%(slug)s
+# Uncomment the line below if you want the files to be prepended with date and time
+# see https://alembic.sqlalchemy.org/en/latest/tutorial.html#editing-the-ini-file
+# for all available tokens
+# file_template = %%(year)d_%%(month).2d_%%(day).2d_%%(hour).2d%%(minute).2d-%%(rev)s_%%(slug)s
+
+# sys.path path, will be prepended to sys.path if present.
+# defaults to the current working directory.  for multiple paths, the path separator
+# is defined by "path_separator" below.
+prepend_sys_path = .
+
+
+# timezone to use when rendering the date within the migration file
+# as well as the filename.
+# If specified, requires the tzdata library which can be installed by adding
+# `alembic[tz]` to the pip requirements.
+# string value is passed to ZoneInfo()
+# leave blank for localtime
+# timezone =
+
+# max length of characters to apply to the "slug" field
+# truncate_slug_length = 40
+
+# set to 'true' to run the environment during
+# the 'revision' command, regardless of autogenerate
+# revision_environment = false
+
+# set to 'true' to allow .pyc and .pyo files without
+# a source .py file to be detected as revisions in the
+# versions/ directory
+# sourceless = false
+
+# version location specification; This defaults
+# to <script_location>/versions.  When using multiple version
+# directories, initial revisions must be specified with --version-path.
+# The path separator used here should be the separator specified by "path_separator"
+# below.
+# version_locations = %(here)s/bar:%(here)s/bat:%(here)s/alembic/versions
+
+# path_separator; This indicates what character is used to split lists of file
+# paths, including version_locations and prepend_sys_path within configparser
+# files such as alembic.ini.
+# The default rendered in new alembic.ini files is "os", which uses os.pathsep
+# to provide os-dependent path splitting.
+#
+# Note that in order to support legacy alembic.ini files, this default does NOT
+# take place if path_separator is not present in alembic.ini.  If this
+# option is omitted entirely, fallback logic is as follows:
+#
+# 1. Parsing of the version_locations option falls back to using the legacy
+#    "version_path_separator" key, which if absent then falls back to the legacy
+#    behavior of splitting on spaces and/or commas.
+# 2. Parsing of the prepend_sys_path option falls back to the legacy
+#    behavior of splitting on spaces, commas, or colons.
+#
+# Valid values for path_separator are:
+#
+# path_separator = :
+# path_separator = ;
+# path_separator = space
+# path_separator = newline
+#
+# Use os.pathsep. Default configuration used for new projects.
+path_separator = os
+
+# set to 'true' to search source files recursively
+# in each "version_locations" directory
+# new in Alembic version 1.10
+# recursive_version_locations = false
+
+# the output encoding used when revision files
+# are written from script.py.mako
+# output_encoding = utf-8
+
+# database URL.  This is consumed by the user-maintained env.py script only.
+# other means of configuring database URLs may be customized within the env.py
+# file.
+sqlalchemy.url = driver://user:pass@localhost/dbname
+
+
+[post_write_hooks]
+# post_write_hooks defines scripts or Python functions that are run
+# on newly generated revision scripts.  See the documentation for further
+# detail and examples
+
+# format using "black" - use the console_scripts runner, against the "black" entrypoint
+# hooks = black
+# black.type = console_scripts
+# black.entrypoint = black
+# black.options = -l 79 REVISION_SCRIPT_FILENAME
+
+# lint with attempts to fix using "ruff" - use the module runner, against the "ruff" module
+# hooks = ruff
+# ruff.type = module
+# ruff.module = ruff
+# ruff.options = check --fix REVISION_SCRIPT_FILENAME
+
+# Alternatively, use the exec runner to execute a binary found on your PATH
+# hooks = ruff
+# ruff.type = exec
+# ruff.executable = ruff
+# ruff.options = check --fix REVISION_SCRIPT_FILENAME
+
+# Logging configuration.  This is also consumed by the user-maintained
+# env.py script only.
+[loggers]
+keys = root,sqlalchemy,alembic
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARNING
+handlers = console
+qualname =
+
+[logger_sqlalchemy]
+level = WARNING
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+datefmt = %H:%M:%S
 </file>
 
 <file path="services/api/requirements-dev.txt">
@@ -552,32 +3555,6 @@ mypy
 black
 isort
 respx
-</file>
-
-<file path="services/api/requirements.txt">
-fastapi
-uvicorn[standard]
-httpx
-requests
-beautifulsoup4
-selectolax
-playwright
-selenium
-python-dotenv
-pydantic
-
-sqlalchemy
-alembic
-psycopg2-binary
-redis
-rq
-celery
-apscheduler
-passlib[bcrypt]
-
-opentelemetry-api
-opentelemetry-sdk
-opentelemetry-instrumentation-fastapi
 </file>
 
 <file path=".editorconfig">
@@ -611,6 +3588,8 @@ out/
 # Env
 .env
 .env.*
+!.env.example
+!.env.*.example
 
 # OS
 .DS_Store
@@ -632,8 +3611,133 @@ out/
 
 </file>
 
+<file path="SECURITY.md">
+
+</file>
+
+<file path="apps/web/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2020"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
+</file>
+
+<file path="services/api/app/main.py">
+import logging
+
+from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.routes.auth import router as auth_router
+from app.api.routes.health import router as health_router
+from app.api.routes.shelf_items import router as shelf_items_router
+from app.api.routes.shelf_sources import router as shelf_sources_router
+from app.core.config import settings
+from app.core.otel import maybe_enable_otel
+
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+
+configure_logging()
+app = FastAPI(title=settings.api_name)
+maybe_enable_otel(app, enabled=settings.otel_enabled, service_name=settings.api_name)
+
+# CORS must allow credentials for cookie auth
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Unversioned health
+app.include_router(health_router)
+
+# Versioned API
+v1 = APIRouter(prefix="/v1")
+v1.include_router(auth_router)
+v1.include_router(shelf_sources_router)
+v1.include_router(shelf_items_router)
+app.include_router(v1)
+</file>
+
+<file path="services/api/requirements.txt">
+fastapi
+uvicorn[standard]
+httpx
+requests
+beautifulsoup4
+selectolax
+playwright
+selenium
+python-dotenv
+pydantic
+
+sqlalchemy
+alembic
+psycopg2-binary
+redis
+rq
+celery
+apscheduler
+passlib[bcrypt]
+bcrypt<4
+
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+python-jose[cryptography]
+pydantic-settings
+email-validator
+python-multipart
+</file>
+
 <file path="Makefile">
-.PHONY: infra-up infra-down api-test web-check dev
+.PHONY: infra-up infra-down api-test web-check dev api-alembic
 
 infra-up:
 	docker compose -f infra/docker-compose.yml up -d
@@ -649,6 +3753,9 @@ web-check:
 
 dev:
 	./scripts/dev.sh
+
+api-alembic:
+	cd services/api && ./bin/alembic $(ARGS)
 </file>
 
 <file path="pyproject.toml">
@@ -663,6 +3770,7 @@ line_length = 100
 [tool.pytest.ini_options]
 addopts = "-q"
 asyncio_mode = "auto"
+pythonpath = ["services/api"]
 </file>
 
 <file path="README.md">
@@ -674,7 +3782,7 @@ ShelfSync links your Goodreads shelves to your local library catalog (Libby/Over
 
 - `apps/web`: Next.js UI
 - `services/api`: FastAPI API
-- `infra`: Docker Compose for Postgres + Redis
+- `infra`: Docker Compose for API + Postgres + Redis
 - `docs`: architecture notes + ADRs
 
 ## Phase 0: local dev
@@ -694,10 +3802,33 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest
-</file>
+```
 
-<file path="SECURITY.md">
+#### Migrations
 
+Use the repo wrapper so Alembic runs with the `services/api/.venv` interpreter:
+If `alembic` resolves to `/opt/homebrew/bin/alembic`, you're using the Homebrew
+install (Python 3.11) and will hit `psycopg2` import errors.
+
+```bash
+cd services/api
+./bin/alembic upgrade head
+```
+
+Generate new migrations once the database is at head.
+If you see `Target database is not up to date`, run `./bin/alembic upgrade head`
+before autogenerating.
+
+```bash
+cd services/api
+./bin/alembic revision --autogenerate -m "phase1 init schema"
+```
+
+From the repo root:
+
+```bash
+make api-alembic ARGS="revision --autogenerate -m 'phase1 init schema'"
+```
 </file>
 
 </files>

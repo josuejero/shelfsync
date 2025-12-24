@@ -1,5 +1,17 @@
-import "./globals.css";
 import type { Metadata } from "next";
+import { Newsreader, Space_Grotesk } from "next/font/google";
+
+import "./globals.css";
+
+const displayFont = Newsreader({
+  subsets: ["latin"],
+  variable: "--font-display",
+});
+
+const bodyFont = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-body",
+});
 
 export const metadata: Metadata = {
   title: "ShelfSync",
@@ -13,7 +25,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-white text-gray-900 antialiased">{children}</body>
+      <body
+        className={`${displayFont.variable} ${bodyFont.variable} bg-[var(--paper)] text-[var(--ink)] antialiased`}
+      >
+        {children}
+      </body>
     </html>
   );
 }

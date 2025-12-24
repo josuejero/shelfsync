@@ -17,6 +17,7 @@ rq
 celery
 apscheduler
 passlib[bcrypt]
+bcrypt<4
 
 opentelemetry-api
 opentelemetry-sdk
@@ -24,3 +25,4 @@ opentelemetry-instrumentation-fastapi
 python-jose[cryptography]
 pydantic-settings
 email-validator
+python-multipart
