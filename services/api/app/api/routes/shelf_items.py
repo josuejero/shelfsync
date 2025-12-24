@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.shelf_item import ShelfItem
 from app.schemas.shelf import ShelfItemOut
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/shelf-items", tags=["shelf-items"])
 

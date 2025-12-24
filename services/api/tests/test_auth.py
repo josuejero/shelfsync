@@ -34,9 +34,8 @@ def test_login_rejects_bad_password(client):
 
 
 def test_login_accepts_legacy_pbkdf2_hash(client, db_session):
-    from passlib.context import CryptContext
-
     from app.models.user import User
+    from passlib.context import CryptContext
 
     legacy_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     db_session.add(
@@ -59,8 +58,6 @@ def test_login_auto_creates_demo_user(client):
 
 
 def test_login_auto_creates_demo_user_with_simple_password(client):
-    resp = client.post(
-        "/v1/auth/login", json={"email": "demo@example.com", "password": "password"}
-    )
+    resp = client.post("/v1/auth/login", json={"email": "demo@example.com", "password": "password"})
     assert resp.status_code == 200
     assert resp.json()["email"] == "demo@example.com"

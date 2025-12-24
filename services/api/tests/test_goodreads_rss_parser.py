@@ -1,5 +1,4 @@
 import pytest
-
 from app.services.goodreads_rss import parse_goodreads_rss
 
 

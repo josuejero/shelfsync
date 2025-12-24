@@ -5,7 +5,6 @@ import xml.etree.ElementTree as ET
 
 from bs4 import BeautifulSoup
 
-
 ISBN_RE = re.compile(r"\b(?:ISBN(?:-13)?|ISBN13)\s*[:#]?\s*([0-9\-]{10,17})\b", re.IGNORECASE)
 ASIN_RE = re.compile(r"\bASIN\s*[:#]?\s*([A-Z0-9]{8,20})\b", re.IGNORECASE)
 

@@ -1,5 +1,4 @@
 import pytest
-
 from app.services.goodreads_csv import CsvImportError, parse_goodreads_csv
 
 

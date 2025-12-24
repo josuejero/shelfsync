@@ -1,15 +1,14 @@
 import logging
 
-from fastapi import APIRouter, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
 from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
+from app.api.routes.matching import router as matching_router
 from app.api.routes.shelf_items import router as shelf_items_router
 from app.api.routes.shelf_sources import router as shelf_sources_router
 from app.core.config import settings
 from app.core.otel import maybe_enable_otel
-
+from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 
 def configure_logging() -> None:
@@ -41,3 +40,4 @@ v1.include_router(auth_router)
 v1.include_router(shelf_sources_router)
 v1.include_router(shelf_items_router)
 app.include_router(v1)
+app.include_router(matching_router)

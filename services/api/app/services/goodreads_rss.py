@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import urljoin, urlparse
@@ -7,6 +8,7 @@ from xml.etree import ElementTree as ET
 import httpx
 from app.core.config import settings
 from app.services.normalization import normalize_isbn
+
 
 @dataclass(frozen=True)
 class GoodreadsRssItem:
@@ -17,6 +19,7 @@ class GoodreadsRssItem:
     isbn13: str | None
     asin: str | None
     shelf: str | None
+
 
 def _local(tag: str) -> str:
     # "{namespace}name" -> "name"
@@ -96,7 +99,10 @@ def normalize_rss_input_url(rss_url_or_path: str) -> str:
         return s
 
     # Treat as path relative to base
-    base = settings.goodreads_base_url.rstrip("/") + "/"
+    base_url = settings.goodreads_base_url
+    if not base_url:
+        raise ValueError("GOODREADS_BASE_URL is not configured")
+    base = base_url.rstrip("/") + "/"
     return urljoin(base, s.lstrip("/"))
 
 

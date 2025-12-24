@@ -86,6 +86,12 @@ class Settings(PydanticBaseSettings):
         default="lax",
         validation_alias="AUTH_COOKIE_SAMESITE",
     )
+    # Catalog provider
+    catalog_provider: str = Field(default="fixture", validation_alias="CATALOG_PROVIDER")
+    fixture_catalog_path: str = Field(
+        default="app/fixtures/catalog_fixture.json",
+        validation_alias="FIXTURE_CATALOG_PATH",
+    )
 
 
 settings = Settings()

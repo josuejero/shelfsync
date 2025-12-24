@@ -1,0 +1,87 @@
+{
+  "provider": "fixture",
+  "items": [
+    {
+      "provider_item_id": "fx_001",
+      "title": "Project Hail Mary",
+      "author": "Andy Weir",
+      "isbn13": "9780593135204",
+      "formats": {
+        "ebook": {
+          "status": "available",
+          "copies_available": 3,
+          "copies_total": 8,
+          "holds": 12,
+          "deep_link": "https://example.invalid/libby/ebook/fx_001"
+        },
+        "audiobook": {
+          "status": "hold",
+          "copies_available": 0,
+          "copies_total": 4,
+          "holds": 44,
+          "deep_link": "https://example.invalid/libby/audiobook/fx_001"
+        }
+      }
+    },
+    {
+      "provider_item_id": "fx_002",
+      "title": "The Hobbit",
+      "author": "J.R.R. Tolkien",
+      "isbn13": "9780547928227",
+      "formats": {
+        "ebook": {
+          "status": "hold",
+          "copies_available": 0,
+          "copies_total": 2,
+          "holds": 120,
+          "deep_link": "https://example.invalid/libby/ebook/fx_002"
+        },
+        "audiobook": {
+          "status": "available",
+          "copies_available": 1,
+          "copies_total": 2,
+          "holds": 5,
+          "deep_link": "https://example.invalid/libby/audiobook/fx_002"
+        }
+      }
+    },
+    {
+      "provider_item_id": "fx_003",
+      "title": "The Pragmatic Programmer",
+      "author": "Andrew Hunt; David Thomas",
+      "isbn13": "9780135957059",
+      "formats": {
+        "ebook": {
+          "status": "not_owned",
+          "deep_link": "https://example.invalid/libby/ebook/fx_003"
+        },
+        "audiobook": {
+          "status": "not_owned",
+          "deep_link": "https://example.invalid/libby/audiobook/fx_003"
+        }
+      }
+    },
+    {
+      "provider_item_id": "fx_004",
+      "title": "Dune",
+      "author": "Frank Herbert",
+      "isbn13": "9780441013593",
+      "formats": {
+        "ebook": {
+          "status": "available",
+          "copies_available": 2,
+          "copies_total": 6,
+          "holds": 18,
+          "deep_link": "https://example.invalid/libby/ebook/fx_004"
+        },
+        "audiobook": {
+          "status": "hold",
+          "copies_available": 0,
+          "copies_total": 3,
+          "holds": 66,
+          "deep_link": "https://example.invalid/libby/audiobook/fx_004"
+        }
+      }
+    }
+  ]
+}

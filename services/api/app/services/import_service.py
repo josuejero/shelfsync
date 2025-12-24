@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy.orm import Session
-
 from app.domain.normalize import build_normalized
 from app.models.shelf_item import ShelfItem
+from sqlalchemy.orm import Session
 
 
 @dataclass
@@ -26,13 +25,23 @@ def upsert_shelf_items(
 ) -> ImportSummary:
     errors_out = list(errors or [])
 
-    # Preload existing items for this user keyed by normalized_key for fast upsert.
-    existing = (
-        db.query(ShelfItem)
-        .filter(ShelfItem.user_id == user_id)
-        .all()
-    )
-    by_key = {it.normalized_key: it for it in existing}
+    def _external_id(item: dict) -> str | None:
+        raw = item.get("external_id") or item.get("goodreads_book_id")
+        if raw is None:
+            return None
+        value = str(raw).strip()
+        return value or None
+
+    ext_ids = [ext for ext in (_external_id(it) for it in items) if ext]
+    existing_by_ext: dict[str, ShelfItem] = {}
+    if ext_ids:
+        query = db.query(ShelfItem).filter(ShelfItem.user_id == user_id)
+        if shelf_source_id is None:
+            query = query.filter(ShelfItem.shelf_source_id.is_(None))
+        else:
+            query = query.filter(ShelfItem.shelf_source_id == shelf_source_id)
+        existing = query.filter(ShelfItem.external_id.in_(ext_ids)).all()
+        existing_by_ext = {it.external_id: it for it in existing if it.external_id}
 
     created = updated = skipped = 0
 
@@ -60,6 +69,7 @@ def upsert_shelf_items(
                     isbn10 = s
 
         asin = it.get("asin")
+        external_id = _external_id(it)
 
         norm = build_normalized(
             title=title,
@@ -69,7 +79,7 @@ def upsert_shelf_items(
             asin=asin,
         )
 
-        existing_item = by_key.get(norm.normalized_key)
+        existing_item = existing_by_ext.get(external_id) if external_id else None
         if existing_item:
             # Update key fields (keep this conservative).
             existing_item.title = title
@@ -81,10 +91,8 @@ def upsert_shelf_items(
             existing_item.normalized_author = norm.normalized_author
             existing_item.needs_fuzzy_match = norm.needs_fuzzy_match
             existing_item.shelf_source_id = shelf_source_id
-
-            # Optional goodreads metadata
-            if it.get("goodreads_book_id"):
-                existing_item.goodreads_book_id = str(it.get("goodreads_book_id"))
+            existing_item.external_id = external_id
+            existing_item.shelf = it.get("shelf")
 
             updated += 1
             continue
@@ -92,19 +100,20 @@ def upsert_shelf_items(
         new_item = ShelfItem(
             user_id=user_id,
             shelf_source_id=shelf_source_id,
+            external_id=external_id,
             title=title,
             author=author,
             isbn13=norm.isbn13,
             isbn10=norm.isbn10,
             asin=norm.asin,
-            goodreads_book_id=str(it.get("goodreads_book_id")) if it.get("goodreads_book_id") else None,
             normalized_title=norm.normalized_title,
             normalized_author=norm.normalized_author,
-            normalized_key=norm.normalized_key,
+            shelf=it.get("shelf"),
             needs_fuzzy_match=norm.needs_fuzzy_match,
         )
         db.add(new_item)
-        by_key[norm.normalized_key] = new_item
+        if external_id:
+            existing_by_ext[external_id] = new_item
         created += 1
 
     return ImportSummary(created=created, updated=updated, skipped=skipped, errors=errors_out)

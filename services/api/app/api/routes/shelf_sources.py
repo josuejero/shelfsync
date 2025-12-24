@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from rq import Retry
-
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.shelf_source import ShelfSource
-from app.schemas.shelf import ImportSummaryOut, RssConnectIn, ShelfSourceOut
+from app.schemas.shelf import (
+    ImportErrorOut,
+    ImportSummaryOut,
+    RssConnectIn,
+    ShelfSourceOut,
+)
 from app.services.goodreads_csv import CsvImportError, parse_goodreads_csv
 from app.services.goodreads_rss import normalize_rss_input_url
 from app.services.shelf_import import ImportErrorItem, upsert_shelf_items
 from app.workers.jobs import sync_goodreads_rss
 from app.workers.queue import get_queue
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from rq import Retry
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/shelf-sources", tags=["shelf-sources"])
 
@@ -25,8 +28,12 @@ def connect_rss(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    rss_url = (payload.rss_url or "").strip()
+    if not rss_url:
+        raise HTTPException(status_code=400, detail="RSS URL is required")
+
     try:
-        url = normalize_rss_input_url(payload.rss_url)
+        url = normalize_rss_input_url(rss_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -70,8 +77,11 @@ def import_csv(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Please upload a .csv file exported from Goodreads.")
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".csv"):
+        raise HTTPException(
+            status_code=400, detail="Please upload a .csv file exported from Goodreads."
+        )
 
     content = file.file.read()
 
@@ -105,13 +115,13 @@ def import_csv(
 
     # Merge row-level errors into summary
     for err in row_errors:
-        (summary.errors or []).append(ImportErrorItem(key=f"line:{err['line']}", error=err["error"]))
+        summary.errors.append(ImportErrorItem(key=f"line:{err['line']}", error=err["error"]))
 
     return ImportSummaryOut(
         created=summary.created,
         updated=summary.updated,
         skipped=summary.skipped,
-        errors=[{"key": e.key, "error": e.error} for e in (summary.errors or [])],
+        errors=[ImportErrorOut(key=e.key, error=e.error) for e in summary.errors],
     )
 
 

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from dataclasses import dataclass, field
 
 from app.models.shelf_item import ShelfItem
 from app.models.shelf_source import ShelfSource
 from app.services.normalization import normalize_text
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 
 @dataclass
@@ -21,22 +20,28 @@ class ImportSummary:
     created: int = 0
     updated: int = 0
     skipped: int = 0
-    errors: list[ImportErrorItem] | None = None
+    errors: list[ImportErrorItem] = field(default_factory=list)
 
 
-def upsert_shelf_items(db: Session, *, user_id: str, source: ShelfSource, items: list[dict]) -> ImportSummary:
-    summary = ImportSummary(errors=[])
+def upsert_shelf_items(
+    db: Session, *, user_id: str, source: ShelfSource, items: list[dict]
+) -> ImportSummary:
+    summary = ImportSummary()
 
     # Preload existing items by external_id (best effort)
     ext_ids = [it.get("external_id") for it in items if it.get("external_id")]
     existing_by_ext: dict[str, ShelfItem] = {}
 
     if ext_ids:
-        rows = db.execute(
-            select(ShelfItem)
-            .where(ShelfItem.shelf_source_id == source.id)
-            .where(ShelfItem.external_id.in_(ext_ids))
-        ).scalars().all()
+        rows = (
+            db.execute(
+                select(ShelfItem)
+                .where(ShelfItem.shelf_source_id == source.id)
+                .where(ShelfItem.external_id.in_(ext_ids))
+            )
+            .scalars()
+            .all()
+        )
         existing_by_ext = {r.external_id: r for r in rows if r.external_id}
 
     for it in items:
@@ -88,7 +93,9 @@ def upsert_shelf_items(db: Session, *, user_id: str, source: ShelfSource, items:
                 summary.created += 1
 
         except Exception as e:
-            summary.errors.append(ImportErrorItem(key=str(it.get("external_id") or title), error=str(e)))
+            summary.errors.append(
+                ImportErrorItem(key=str(it.get("external_id") or title), error=str(e))
+            )
 
     db.commit()
     return summary

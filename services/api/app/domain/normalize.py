@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 _non_alnum = re.compile(r"[^a-z0-9]+")
 _digits_or_x = re.compile(r"[^0-9Xx]")
 
