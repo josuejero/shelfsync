@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 from app.api.deps import get_current_user
@@ -12,24 +13,29 @@ from app.models.catalog_match import CatalogMatch
 from app.models.shelf_item import ShelfItem
 from app.models.shelf_source import ShelfSource
 from app.models.user_settings import UserSettings
-from app.schemas.matching import CatalogItemOut
-from app.services.availability_cache import get_availability_cached
+from app.schemas.books import (
+    BookDetailMatchOut,
+    BookDetailOut,
+    BookDetailSettingsOut,
+    BookDetailShelfItemOut,
+    BookDetailSourceOut,
+)
+from app.schemas.dashboard import AvailabilityOut, ReadNextOut
+from app.services.read_next_scoring import compute_read_next
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/v1", tags=["books"])
 
 
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 @router.get(
     "/books/{shelf_item_id}",
+    response_model=BookDetailOut,
     dependencies=[
         Depends(
             rate_limiter(
-                scope="books",
+                "book_detail",
                 limit=settings.rate_limit_books_per_window,
                 window_seconds=settings.rate_limit_window_secs,
             )
@@ -41,149 +47,109 @@ def get_book_detail(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    s = db.get(UserSettings, user.id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Settings not found")
+    si = db.get(ShelfItem, shelf_item_id)
+    if si is None or si.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Book not found")
 
-    it = (
-        db.query(ShelfItem)
-        .filter(ShelfItem.user_id == user.id)
-        .filter(ShelfItem.id == shelf_item_id)
+    user_settings = db.execute(
+        select(UserSettings).where(UserSettings.user_id == user.id)
+    ).scalar_one_or_none()
+    if user_settings is None:
+        user_settings = UserSettings(user_id=user.id)
+        db.add(user_settings)
+        db.commit()
+        db.refresh(user_settings)
+
+    preferred_formats = list(user_settings.preferred_formats or [])
+
+    m = (
+        db.execute(
+            select(CatalogMatch)
+            .where(CatalogMatch.user_id == user.id)
+            .where(CatalogMatch.shelf_item_id == si.id)
+            .order_by(CatalogMatch.confidence.desc())
+        )
+        .scalars()
         .first()
     )
-    if not it:
-        raise HTTPException(status_code=404, detail="Shelf item not found")
 
-    source = None
-    if it.shelf_source_id:
-        source = db.get(ShelfSource, it.shelf_source_id)
+    availability: list[AvailabilityOut] = []
+    match_out: BookDetailMatchOut | None = None
 
-    cm = (
-        db.query(CatalogMatch)
-        .filter(CatalogMatch.user_id == user.id)
-        .filter(CatalogMatch.shelf_item_id == it.id)
-        .first()
-    )
+    if m is not None:
+        ci = db.get(CatalogItem, m.catalog_item_id)
 
-    ci = db.get(CatalogItem, cm.catalog_item_id) if cm else None
-
-    formats = s.preferred_formats or ["ebook"]
-    library_system = s.library_system
-
-    # Ensure availability snapshots are present / fresh
-    avail_out = []
-
-    if ci and library_system:
-        now = _now_utc()
-        stale_cutoff = now.timestamp() - float(settings.availability_cache_ttl_secs)
+        if ci is not None:
+            match_out = BookDetailMatchOut(
+                catalog_item_id=m.catalog_item_id,
+                provider=m.provider,
+                provider_item_id=ci.provider_item_id,
+                method=m.method,
+                confidence=float(m.confidence or 0.0),
+            )
 
         snaps = (
-            db.query(AvailabilitySnapshot)
-            .filter(AvailabilitySnapshot.user_id == user.id)
-            .filter(AvailabilitySnapshot.catalog_item_id == ci.id)
-            .filter(AvailabilitySnapshot.format.in_(formats))
+            db.execute(
+                select(AvailabilitySnapshot)
+                .where(AvailabilitySnapshot.user_id == user.id)
+                .where(AvailabilitySnapshot.catalog_item_id == m.catalog_item_id)
+            )
+            .scalars()
             .all()
         )
-        snap_by_fmt = {s.format: s for s in snaps}
 
-        needs_refresh = False
-        for fmt in formats:
-            snap = snap_by_fmt.get(fmt)
-            if not snap or snap.last_checked_at.timestamp() < stale_cutoff:
-                needs_refresh = True
+        def _sort_key(a: AvailabilitySnapshot) -> tuple[int, str]:
+            if a.format in preferred_formats:
+                return (preferred_formats.index(a.format), a.format)
+            return (999, a.format)
 
-        if needs_refresh:
-            cached = get_availability_cached(
-                library_system=library_system,
-                provider_item_ids=[ci.provider_item_id],
-                formats=formats,
+        for a in sorted(snaps, key=_sort_key):
+            availability.append(
+                AvailabilityOut(
+                    format=a.format,
+                    status=a.status,
+                    copies_available=a.copies_available,
+                    copies_total=a.copies_total,
+                    holds=a.holds,
+                    deep_link=a.deep_link,
+                    last_checked_at=a.last_checked_at,
+                )
             )
 
-            for (_pid, fmt), entry in cached.items():
-                snap = snap_by_fmt.get(fmt)
-                if not snap:
-                    snap = AvailabilitySnapshot(
-                        user_id=user.id,
-                        catalog_item_id=ci.id,
-                        format=fmt,
-                        status=str(entry.availability.status),
-                        copies_available=entry.availability.copies_available,
-                        copies_total=entry.availability.copies_total,
-                        holds=entry.availability.holds,
-                        deep_link=entry.availability.deep_link,
-                        last_checked_at=entry.last_checked_at,
-                    )
-                    db.add(snap)
-                    snap_by_fmt[fmt] = snap
-                else:
-                    snap.status = str(entry.availability.status)
-                    snap.copies_available = entry.availability.copies_available
-                    snap.copies_total = entry.availability.copies_total
-                    snap.holds = entry.availability.holds
-                    snap.deep_link = entry.availability.deep_link
-                    snap.last_checked_at = entry.last_checked_at
+    rn = compute_read_next(availability, preferred_formats)
 
-            db.commit()
-
-        # Build output
-        for fmt in formats:
-            snap = snap_by_fmt.get(fmt)
-            if not snap:
-                continue
-            avail_out.append(
-                {
-                    "format": snap.format,
-                    "status": snap.status,
-                    "copies_available": snap.copies_available,
-                    "copies_total": snap.copies_total,
-                    "holds": snap.holds,
-                    "deep_link": snap.deep_link,
-                    "last_checked_at": snap.last_checked_at,
-                }
+    source_out: BookDetailSourceOut | None = None
+    if si.shelf_source_id:
+        src = db.get(ShelfSource, si.shelf_source_id)
+        if src is not None:
+            source_out = BookDetailSourceOut(
+                id=src.id,
+                source_type=src.source_type,
+                provider=src.provider,
+                source_ref=src.source_ref,
+                last_synced_at=src.last_synced_at,
+                last_sync_status=src.last_sync_status,
+                last_sync_error=src.last_sync_error,
             )
 
-    return {
-        "shelf_item": {
-            "id": it.id,
-            "title": it.title,
-            "author": it.author,
-            "isbn10": it.isbn10,
-            "isbn13": it.isbn13,
-            "asin": it.asin,
-            "shelf": it.shelf,
-            "needs_fuzzy_match": it.needs_fuzzy_match,
-            "created_at": it.created_at,
-        },
-        "source": {
-            "source_type": source.source_type if source else None,
-            "source_ref": source.source_ref if source else None,
-            "last_synced_at": source.last_synced_at if source else None,
-            "last_sync_status": source.last_sync_status if source else None,
-            "last_sync_error": source.last_sync_error if source else None,
-        },
-        "match": (
-            {
-                "method": cm.method,
-                "confidence": float(cm.confidence),
-                "evidence": cm.evidence,
-                "catalog_item": CatalogItemOut(
-                    id=ci.id,
-                    provider=ci.provider,
-                    provider_item_id=ci.provider_item_id,
-                    title=ci.title,
-                    author=ci.author,
-                    isbn10=ci.isbn10,
-                    isbn13=ci.isbn13,
-                    asin=ci.asin,
-                ).model_dump(),
-            }
-            if (cm and ci)
-            else None
+    return BookDetailOut(
+        shelf_item=BookDetailShelfItemOut(
+            id=si.id,
+            title=si.title,
+            author=si.author,
+            isbn10=si.isbn10,
+            isbn13=si.isbn13,
+            asin=si.asin,
+            shelf=si.shelf,
+            needs_fuzzy_match=si.needs_fuzzy_match,
         ),
-        "availability": avail_out,
-        "settings": {
-            "library_system": s.library_system,
-            "preferred_formats": s.preferred_formats,
-            "updated_at": s.updated_at,
-        },
-    }
+        match=match_out,
+        availability=availability,
+        source=source_out,
+        settings=BookDetailSettingsOut(
+            library_system=user_settings.library_system,
+            preferred_formats=preferred_formats,
+        ),
+        read_next=ReadNextOut(**asdict(rn)),
+        generated_at=datetime.now(timezone.utc),
+    )

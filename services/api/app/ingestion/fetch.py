@@ -12,7 +12,9 @@ def _rewrite_goodreads_url(url: str, base_url: str | None) -> str:
 
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").lower()
-    if not hostname or not (hostname == "goodreads.com" or hostname.endswith(".goodreads.com")):
+    if not hostname or not (
+        hostname == "goodreads.com" or hostname.endswith(".goodreads.com")
+    ):
         return url
 
     base = urlparse(base_url)
@@ -23,7 +25,9 @@ def _rewrite_goodreads_url(url: str, base_url: str | None) -> str:
     incoming_path = parsed.path or "/"
     merged_path = f"{base_path}{incoming_path}" if base_path else incoming_path
 
-    rewritten = parsed._replace(scheme=base.scheme, netloc=base.netloc, path=merged_path)
+    rewritten = parsed._replace(
+        scheme=base.scheme, netloc=base.netloc, path=merged_path
+    )
     return urlunparse(rewritten)
 
 

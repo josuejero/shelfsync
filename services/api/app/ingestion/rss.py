@@ -5,7 +5,9 @@ import xml.etree.ElementTree as ET
 
 from bs4 import BeautifulSoup
 
-ISBN_RE = re.compile(r"\b(?:ISBN(?:-13)?|ISBN13)\s*[:#]?\s*([0-9\-]{10,17})\b", re.IGNORECASE)
+ISBN_RE = re.compile(
+    r"\b(?:ISBN(?:-13)?|ISBN13)\s*[:#]?\s*([0-9\-]{10,17})\b", re.IGNORECASE
+)
 ASIN_RE = re.compile(r"\bASIN\s*[:#]?\s*([A-Z0-9]{8,20})\b", re.IGNORECASE)
 
 
@@ -21,7 +23,9 @@ def _find_first_text(elem: ET.Element, wanted: set[str]) -> str | None:
     return None
 
 
-def _extract_identifiers_from_description(description_html: str) -> tuple[str | None, str | None]:
+def _extract_identifiers_from_description(
+    description_html: str,
+) -> tuple[str | None, str | None]:
     if not description_html:
         return None, None
 
@@ -70,7 +74,9 @@ def parse_goodreads_rss(xml_text: str) -> list[dict]:
         if not title or not author:
             continue
 
-        isbn_from_desc, asin_from_desc = _extract_identifiers_from_description(description or "")
+        isbn_from_desc, asin_from_desc = _extract_identifiers_from_description(
+            description or ""
+        )
 
         goodreads_book_id = None
         if link and "/book/show/" in link:

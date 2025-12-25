@@ -43,7 +43,9 @@ def _split_title_author(title: str) -> tuple[str, str]:
     return title.strip(), ""
 
 
-def parse_goodreads_rss(xml_text: str, default_shelf: str | None = None) -> list[GoodreadsRssItem]:
+def parse_goodreads_rss(
+    xml_text: str, default_shelf: str | None = None
+) -> list[GoodreadsRssItem]:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as e:
@@ -77,7 +79,11 @@ def parse_goodreads_rss(xml_text: str, default_shelf: str | None = None) -> list
                     title=title.strip(),
                     author=author.strip() or "Unknown",
                     isbn10=isbn if isbn and len(isbn) <= 10 else None,
-                    isbn13=isbn13 if isbn13 else (isbn if isbn and len(isbn) == 13 else None),
+                    isbn13=(
+                        isbn13
+                        if isbn13
+                        else (isbn if isbn and len(isbn) == 13 else None)
+                    ),
                     asin=asin,
                     shelf=default_shelf,
                 )

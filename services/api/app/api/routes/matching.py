@@ -28,7 +28,9 @@ router = APIRouter(prefix="/v1", tags=["matching"])
 @router.post("/matching/refresh", response_model=RefreshEnqueuedOut)
 def refresh_matching(user=Depends(get_current_user)):
     q = get_queue()
-    job = q.enqueue(refresh_matching_for_user, user.id, retry=Retry(max=2, interval=[5, 15]))
+    job = q.enqueue(
+        refresh_matching_for_user, user.id, retry=Retry(max=2, interval=[5, 15])
+    )
     return {"job_id": job.id}
 
 

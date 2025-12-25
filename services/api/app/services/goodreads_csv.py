@@ -20,7 +20,9 @@ def parse_goodreads_csv(content: bytes) -> tuple[list[dict], list[dict]]:
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raise CsvImportError("CSV must be UTF-8 encoded (Goodreads export is usually UTF-8).")
+        raise CsvImportError(
+            "CSV must be UTF-8 encoded (Goodreads export is usually UTF-8)."
+        )
 
     reader = csv.DictReader(io.StringIO(text))
     required = {"Title", "Author"}

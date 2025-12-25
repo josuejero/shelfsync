@@ -8,7 +8,9 @@ from app.core.config import settings
 from app.core.redis import get_redis
 
 
-def publish_sync_event(*, user_id: str, run_id: str, type_: str, payload: dict[str, Any]):
+def publish_sync_event(
+    *, user_id: str, run_id: str, type_: str, payload: dict[str, Any]
+):
     r = get_redis(settings.redis_url)
     channel = f"sync:{user_id}:{run_id}"
     body = {

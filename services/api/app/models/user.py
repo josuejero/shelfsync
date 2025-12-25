@@ -15,8 +15,12 @@ def utcnow() -> datetime:
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    email: Mapped[str] = mapped_column(
+        String(320), unique=True, index=True, nullable=False
+    )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -26,8 +30,17 @@ class User(Base):
     )
 
     settings = relationship(
-        "UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan"
+        "UserSettings",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
-    shelf_sources = relationship("ShelfSource", back_populates="user", cascade="all, delete-orphan")
-    shelf_items = relationship("ShelfItem", back_populates="user", cascade="all, delete-orphan")
-    sync_runs = relationship("SyncRun", back_populates="user", cascade="all, delete-orphan")
+    shelf_sources = relationship(
+        "ShelfSource", back_populates="user", cascade="all, delete-orphan"
+    )
+    shelf_items = relationship(
+        "ShelfItem", back_populates="user", cascade="all, delete-orphan"
+    )
+    sync_runs = relationship(
+        "SyncRun", back_populates="user", cascade="all, delete-orphan"
+    )

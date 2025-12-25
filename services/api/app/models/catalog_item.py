@@ -11,7 +11,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 class CatalogItem(Base):
     __tablename__ = "catalog_items"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
 
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     provider_item_id: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -26,7 +28,9 @@ class CatalogItem(Base):
     raw: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -36,5 +40,7 @@ class CatalogItem(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("provider", "provider_item_id", name="uq_catalog_items_provider_item"),
+        UniqueConstraint(
+            "provider", "provider_item_id", name="uq_catalog_items_provider_item"
+        ),
     )

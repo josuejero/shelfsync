@@ -49,7 +49,9 @@ def parse_goodreads_csv(csv_bytes: bytes) -> tuple[list[dict], list[str]]:
     author_col = header_map["author"]
 
     isbn13_col = header_map.get("isbn13") or header_map.get("isbn 13")
-    isbn10_col = header_map.get("isbn") or header_map.get("isbn10") or header_map.get("isbn 10")
+    isbn10_col = (
+        header_map.get("isbn") or header_map.get("isbn10") or header_map.get("isbn 10")
+    )
     asin_col = header_map.get("asin")
 
     items: list[dict] = []

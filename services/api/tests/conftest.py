@@ -37,7 +37,9 @@ def db_session(engine):
     connection = engine.connect()
     tx = connection.begin()
 
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=connection)
+    TestingSessionLocal = sessionmaker(
+        autocommit=False, autoflush=False, bind=connection
+    )
     session = TestingSessionLocal()
 
     try:

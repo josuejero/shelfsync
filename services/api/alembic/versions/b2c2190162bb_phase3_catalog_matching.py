@@ -36,7 +36,9 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("provider", "provider_item_id", name="uq_catalog_items_provider_item"),
+        sa.UniqueConstraint(
+            "provider", "provider_item_id", name="uq_catalog_items_provider_item"
+        ),
     )
     op.create_table(
         "availability_snapshots",
@@ -50,7 +52,9 @@ def upgrade() -> None:
         sa.Column("holds", sa.Integer(), nullable=True),
         sa.Column("deep_link", sa.String(length=500), nullable=True),
         sa.Column("last_checked_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["catalog_item_id"], ["catalog_items.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["catalog_item_id"], ["catalog_items.id"], ondelete="CASCADE"
+        ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
@@ -81,11 +85,17 @@ def upgrade() -> None:
         sa.Column("evidence", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["catalog_item_id"], ["catalog_items.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["shelf_item_id"], ["shelf_items.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["catalog_item_id"], ["catalog_items.id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(
+            ["shelf_item_id"], ["shelf_items.id"], ondelete="CASCADE"
+        ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("user_id", "shelf_item_id", name="uq_catalog_match_user_shelf_item"),
+        sa.UniqueConstraint(
+            "user_id", "shelf_item_id", name="uq_catalog_match_user_shelf_item"
+        ),
     )
     op.create_index(
         op.f("ix_catalog_matches_catalog_item_id"),
@@ -94,7 +104,10 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_index(
-        op.f("ix_catalog_matches_shelf_item_id"), "catalog_matches", ["shelf_item_id"], unique=False
+        op.f("ix_catalog_matches_shelf_item_id"),
+        "catalog_matches",
+        ["shelf_item_id"],
+        unique=False,
     )
     op.create_index(
         op.f("ix_catalog_matches_user_id"), "catalog_matches", ["user_id"], unique=False
@@ -114,7 +127,9 @@ def upgrade() -> None:
         existing_nullable=True,
     )
     op.drop_index(op.f("ix_shelf_items_user_normkey"), table_name="shelf_items")
-    op.drop_constraint(op.f("uq_shelf_item_user_normkey"), "shelf_items", type_="unique")
+    op.drop_constraint(
+        op.f("uq_shelf_item_user_normkey"), "shelf_items", type_="unique"
+    )
     op.create_index(
         "ix_shelf_items_source_external_unique",
         "shelf_items",
@@ -124,7 +139,9 @@ def upgrade() -> None:
     )
     op.drop_column("shelf_items", "normalized_key")
     op.drop_column("shelf_items", "goodreads_book_id")
-    op.drop_constraint(op.f("uq_shelf_source_user_type_ref"), "shelf_sources", type_="unique")
+    op.drop_constraint(
+        op.f("uq_shelf_source_user_type_ref"), "shelf_sources", type_="unique"
+    )
     op.drop_column("shelf_sources", "shelf_name")
     op.drop_column("shelf_sources", "last_imported_at")
     # ### end Alembic commands ###
@@ -144,7 +161,9 @@ def downgrade() -> None:
     )
     op.add_column(
         "shelf_sources",
-        sa.Column("shelf_name", sa.VARCHAR(length=200), autoincrement=False, nullable=True),
+        sa.Column(
+            "shelf_name", sa.VARCHAR(length=200), autoincrement=False, nullable=True
+        ),
     )
     op.create_unique_constraint(
         op.f("uq_shelf_source_user_type_ref"),
@@ -154,11 +173,21 @@ def downgrade() -> None:
     )
     op.add_column(
         "shelf_items",
-        sa.Column("goodreads_book_id", sa.VARCHAR(length=40), autoincrement=False, nullable=True),
+        sa.Column(
+            "goodreads_book_id",
+            sa.VARCHAR(length=40),
+            autoincrement=False,
+            nullable=True,
+        ),
     )
     op.add_column(
         "shelf_items",
-        sa.Column("normalized_key", sa.VARCHAR(length=1100), autoincrement=False, nullable=False),
+        sa.Column(
+            "normalized_key",
+            sa.VARCHAR(length=1100),
+            autoincrement=False,
+            nullable=False,
+        ),
     )
     op.drop_index(
         "ix_shelf_items_source_external_unique",
@@ -192,12 +221,19 @@ def downgrade() -> None:
         existing_nullable=True,
     )
     op.drop_index(op.f("ix_catalog_matches_user_id"), table_name="catalog_matches")
-    op.drop_index(op.f("ix_catalog_matches_shelf_item_id"), table_name="catalog_matches")
-    op.drop_index(op.f("ix_catalog_matches_catalog_item_id"), table_name="catalog_matches")
-    op.drop_table("catalog_matches")
-    op.drop_index(op.f("ix_availability_snapshots_user_id"), table_name="availability_snapshots")
     op.drop_index(
-        op.f("ix_availability_snapshots_catalog_item_id"), table_name="availability_snapshots"
+        op.f("ix_catalog_matches_shelf_item_id"), table_name="catalog_matches"
+    )
+    op.drop_index(
+        op.f("ix_catalog_matches_catalog_item_id"), table_name="catalog_matches"
+    )
+    op.drop_table("catalog_matches")
+    op.drop_index(
+        op.f("ix_availability_snapshots_user_id"), table_name="availability_snapshots"
+    )
+    op.drop_index(
+        op.f("ix_availability_snapshots_catalog_item_id"),
+        table_name="availability_snapshots",
     )
     op.drop_table("availability_snapshots")
     op.drop_table("catalog_items")

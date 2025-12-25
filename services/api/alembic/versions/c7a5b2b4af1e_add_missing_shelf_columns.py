@@ -22,7 +22,9 @@ def upgrade() -> None:
     """Upgrade schema."""
     op.add_column(
         "shelf_sources",
-        sa.Column("provider", sa.String(length=40), nullable=False, server_default="goodreads"),
+        sa.Column(
+            "provider", sa.String(length=40), nullable=False, server_default="goodreads"
+        ),
     )
     op.add_column(
         "shelf_sources",

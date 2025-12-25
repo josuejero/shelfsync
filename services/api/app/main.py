@@ -1,33 +1,13 @@
-import logging
+from __future__ import annotations
 
-from app.api.routes.auth import router as auth_router
-from app.api.routes.books import router as books_router
-from app.api.routes.dashboard import router as dashboard_router
-from app.api.routes.health import router as health_router
-from app.api.routes.libraries import router as libraries_router
-from app.api.routes.matching import router as matching_router
-from app.api.routes.settings import router as settings_router
-from app.api.routes.shelf_items import router as shelf_items_router
-from app.api.routes.shelf_sources import router as shelf_sources_router
+from app.api.router import api_router
 from app.core.config import settings
-from app.core.otel import init_otel, maybe_enable_otel
-from app.middleware.request_id import RequestIdMiddleware
-from fastapi import APIRouter, FastAPI
+from app.core.otel import init_otel
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-
-def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-
-
-configure_logging()
 app = FastAPI(title=settings.api_name)
-maybe_enable_otel(app, enabled=settings.otel_enabled, service_name=settings.api_name)
 
-# CORS must allow credentials for cookie auth
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -35,20 +15,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(RequestIdMiddleware)
 
-# Unversioned health
-app.include_router(health_router)
+app.include_router(api_router)
 
-# Versioned API
-v1 = APIRouter(prefix="/v1")
-v1.include_router(auth_router)
-v1.include_router(shelf_sources_router)
-v1.include_router(shelf_items_router)
-v1.include_router(settings_router)
-v1.include_router(libraries_router)
-v1.include_router(dashboard_router)
-v1.include_router(books_router)
-app.include_router(v1)
-app.include_router(matching_router)
 init_otel(app)

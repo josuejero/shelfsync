@@ -22,6 +22,9 @@ bcrypt<4
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+opentelemetry-exporter-otlp
+
 python-jose[cryptography]
 pydantic-settings
 email-validator

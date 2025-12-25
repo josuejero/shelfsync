@@ -1,12 +1,11 @@
-[tool.black]
-line-length = 100
-target-version = ["py313"]
-
-[tool.isort]
-profile = "black"
-line_length = 100
-
 [tool.pytest.ini_options]
 addopts = "-q"
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["services/api"]
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"

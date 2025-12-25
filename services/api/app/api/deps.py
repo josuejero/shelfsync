@@ -26,20 +26,30 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     # Allow either Authorization: Bearer <token> OR cookie-based auth
-    token = _extract_bearer_token(request) or request.cookies.get(settings.auth_cookie_name)
+    token = _extract_bearer_token(request) or request.cookies.get(
+        settings.auth_cookie_name
+    )
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
 
     try:
         payload = decode_access_token(token)
         user_id = payload.get("sub")
         if not user_id:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            )
     except (JWTError, HTTPException):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
 
     user = db.get(User, user_id)
     if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
+        )
 
     return user

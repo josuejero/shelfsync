@@ -15,7 +15,9 @@ if config.config_file_name is not None:
 # Point Alembic at your metadata
 target_metadata = Base.metadata
 
-DEFAULT_DATABASE_URL = "postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync"
+DEFAULT_DATABASE_URL = (
+    "postgresql+psycopg2://shelfsync:shelfsync@localhost:5432/shelfsync"
+)
 
 
 def get_database_url() -> str:

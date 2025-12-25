@@ -116,4 +116,6 @@ def upsert_shelf_items(
             existing_by_ext[external_id] = new_item
         created += 1
 
-    return ImportSummary(created=created, updated=updated, skipped=skipped, errors=errors_out)
+    return ImportSummary(
+        created=created, updated=updated, skipped=skipped, errors=errors_out
+    )

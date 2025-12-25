@@ -20,6 +20,10 @@ class AvailabilityProvider:
         self._user_id = user_id
         self._catalog_provider = get_catalog_provider()
 
+    @property
+    def name(self) -> str:
+        return self._catalog_provider.name
+
     def availability_bulk(self, items: Iterable[ShelfItem]) -> list[AvailabilityResult]:
         shelf_ids = [s.id for s in items]
         if not shelf_ids:
@@ -45,19 +49,23 @@ class AvailabilityProvider:
             provider_to_catalog[pid] = catalog_item.id
             provider_item_ids.append(pid)
 
-        if not provider_item_ids:
-            return []
-
-        availabilities = run_async(
-            self._catalog_provider.availability_bulk(provider_item_ids=provider_item_ids)
+        # Ask the catalog provider for availability on its own IDs.
+        availability_list = run_async(
+            self._catalog_provider.availability_bulk(
+                provider_item_ids=provider_item_ids
+            )
         )
 
         out: list[AvailabilityResult] = []
-        for availability in availabilities:
+        for availability in availability_list:
             catalog_id = provider_to_catalog.get(availability.provider_item_id)
             if not catalog_id:
                 continue
-            out.append(AvailabilityResult(catalog_item_id=catalog_id, availability=availability))
+            out.append(
+                AvailabilityResult(
+                    catalog_item_id=catalog_id, availability=availability
+                )
+            )
 
         return out
 
@@ -69,5 +77,4 @@ def get_provider(db: Session, user_id: str) -> AvailabilityProvider:
     The provider looks up existing catalog matches and delegates availability
     lookups to the configured catalog provider.
     """
-
     return AvailabilityProvider(db=db, user_id=user_id)

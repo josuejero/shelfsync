@@ -22,7 +22,9 @@ class UserSettings(Base):
     library_system: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     # Example: ["ebook", "audiobook"]
-    preferred_formats: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    preferred_formats: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False

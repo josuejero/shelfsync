@@ -50,3 +50,7 @@ class RssConnectIn(BaseModel):
     rss_url: str
     shelf: str | None = "to-read"
     sync_now: bool = True
+
+
+class SyncEnqueuedOut(BaseModel):
+    job_id: str

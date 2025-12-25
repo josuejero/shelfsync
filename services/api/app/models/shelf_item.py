@@ -15,14 +15,22 @@ def utcnow() -> datetime:
 class ShelfItem(Base):
     __tablename__ = "shelf_items"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
 
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
     )
 
     shelf_source_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("shelf_sources.id", ondelete="SET NULL"), index=True, nullable=True
+        String(36),
+        ForeignKey("shelf_sources.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
     )
 
     # RSS: guid/book_id; CSV: "Book Id" (stringified)
@@ -41,7 +49,9 @@ class ShelfItem(Base):
     # A single primary shelf for now (e.g. to-read/read/currently-reading)
     shelf: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
-    needs_fuzzy_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    needs_fuzzy_match: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False

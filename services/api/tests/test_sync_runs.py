@@ -7,7 +7,10 @@ def test_start_sync_run_creates_run_and_enqueues_job(client, monkeypatch):
     def fake_enqueue_availability_refresh(*, sync_run_id):
         called["id"] = str(sync_run_id)
 
-    monkeypatch.setattr("app.api.routes.sync_runs.enqueue_availability_refresh", fake_enqueue_availability_refresh)
+    monkeypatch.setattr(
+        "app.api.routes.sync_runs.enqueue_availability_refresh",
+        fake_enqueue_availability_refresh,
+    )
 
     # Act
     resp = client.post("/v1/sync-runs", json={"kind": "availability_refresh"})

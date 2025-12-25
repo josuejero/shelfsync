@@ -47,7 +47,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(op.f("ix_shelf_sources_user_id"), "shelf_sources", ["user_id"], unique=False)
+    op.create_index(
+        op.f("ix_shelf_sources_user_id"), "shelf_sources", ["user_id"], unique=False
+    )
     op.create_table(
         "user_settings",
         sa.Column("user_id", sa.String(length=36), nullable=False),
@@ -65,14 +67,21 @@ def upgrade() -> None:
         sa.Column("title", sa.String(length=600), nullable=False),
         sa.Column("author", sa.String(length=400), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["shelf_source_id"], ["shelf_sources.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["shelf_source_id"], ["shelf_sources.id"], ondelete="SET NULL"
+        ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
-        op.f("ix_shelf_items_shelf_source_id"), "shelf_items", ["shelf_source_id"], unique=False
+        op.f("ix_shelf_items_shelf_source_id"),
+        "shelf_items",
+        ["shelf_source_id"],
+        unique=False,
     )
-    op.create_index(op.f("ix_shelf_items_user_id"), "shelf_items", ["user_id"], unique=False)
+    op.create_index(
+        op.f("ix_shelf_items_user_id"), "shelf_items", ["user_id"], unique=False
+    )
     op.create_index(
         "ix_shelf_items_user_title_author",
         "shelf_items",

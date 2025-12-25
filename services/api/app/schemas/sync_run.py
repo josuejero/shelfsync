@@ -1,32 +1,32 @@
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Optional
-from uuid import UUID
 
 from pydantic import BaseModel
 
 
+class StartSyncRunIn(BaseModel):
+    kind: str
+
+
 class SyncRunOut(BaseModel):
-    id: UUID
+    id: str
     kind: str
     status: str
     progress_current: int
     progress_total: int
-    error_message: Optional[str] = None
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
 
 
-class SyncRunCreateIn(BaseModel):
-    kind: str = "availability_refresh"
-
-
 class SyncRunEvent(BaseModel):
-    # SSE event payload
+    run_id: str
     type: str
-    run_id: UUID
-    ts: datetime
     payload: dict
+    ts: datetime

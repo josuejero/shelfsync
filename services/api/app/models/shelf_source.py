@@ -15,16 +15,23 @@ def utcnow() -> datetime:
 class ShelfSource(Base):
     __tablename__ = "shelf_sources"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
     )
 
     # "rss" | "csv"
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
 
     # For now: only "goodreads" (later phases can add "libby" etc)
-    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="goodreads")
+    provider: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="goodreads"
+    )
 
     # RSS URL or a logical identifier for CSV imports
     source_ref: Mapped[str] = mapped_column(String(2000), nullable=False)
@@ -35,7 +42,9 @@ class ShelfSource(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Sync metadata
-    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_sync_status: Mapped[str | None] = mapped_column(
         String(30), nullable=True
     )  # "ok" | "error"
@@ -49,4 +58,6 @@ class ShelfSource(Base):
     )
 
     user = relationship("User", back_populates="shelf_sources")
-    items = relationship("ShelfItem", back_populates="shelf_source", cascade="all, delete-orphan")
+    items = relationship(
+        "ShelfItem", back_populates="shelf_source", cascade="all, delete-orphan"
+    )

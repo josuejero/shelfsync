@@ -19,7 +19,9 @@ async def test_isbn_match(tmp_path):
         encoding="utf-8",
     )
     provider = FixtureProvider(str(fixture))
-    item = DummyShelfItem(title="Project Hail Mary", author="Andy Weir", isbn13="9780593135204")
+    item = DummyShelfItem(
+        title="Project Hail Mary", author="Andy Weir", isbn13="9780593135204"
+    )
 
     res = await match_shelf_item(provider, item)  # type: ignore[arg-type]
     assert res is not None

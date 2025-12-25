@@ -23,6 +23,14 @@ class AvailabilityOut(BaseModel):
     last_checked_at: datetime
 
 
+class ReadNextOut(BaseModel):
+    score: float
+    tier: str
+    best_format: str | None
+    hold_ratio: float | None
+    reasons: list[str]
+
+
 class DashboardRowOut(BaseModel):
     shelf_item_id: str
     title: str
@@ -32,6 +40,7 @@ class DashboardRowOut(BaseModel):
 
     match: MatchMiniOut | None
     availability: list[AvailabilityOut]
+    read_next: ReadNextOut
 
 
 class LastSyncOut(BaseModel):

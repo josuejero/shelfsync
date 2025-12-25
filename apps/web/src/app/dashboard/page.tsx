@@ -1,23 +1,24 @@
-"use client";
-
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
 
-import { AuthGuard } from "@/components/AuthGuard";
 import { apiFetch } from "@/lib/api";
+import { compareReadNext, readNextTooltip, type ReadNext } from "@/lib/readNext";
 
-type DashboardResponse = {
-  settings: { library_system: string | null; preferred_formats: string[]; updated_at: string };
-  last_sync: {
-    source_type: string | null;
-    source_id: string | null;
-    last_synced_at: string | null;
-    last_sync_status: string | null;
-    last_sync_error: string | null;
-  };
-  page: { limit: number; offset: number; total: number };
-  items: DashboardRow[];
+type MatchMini = {
+  catalog_item_id: string;
+  provider: string;
+  provider_item_id: string;
+  method: string;
+  confidence: number;
+};
+
+type Availability = {
+  format: string;
+  status: "available" | "hold" | "not_owned";
+  copies_available: number | null;
+  copies_total: number | null;
+  holds: number | null;
+  deep_link: string | null;
+  last_checked_at: string;
 };
 
 type DashboardRow = {
@@ -26,277 +27,168 @@ type DashboardRow = {
   author: string | null;
   shelf: string | null;
   needs_fuzzy_match: boolean;
-  match: {
-    catalog_item_id: string;
-    provider: string;
-    provider_item_id: string;
-    method: string;
-    confidence: number;
-  } | null;
+  match: MatchMini | null;
   availability: Availability[];
+  read_next: ReadNext;
 };
 
-type Availability = {
-  format: string;
-  status: string;
-  copies_available: number | null;
-  copies_total: number | null;
-  holds: number | null;
-  deep_link: string | null;
-  last_checked_at: string;
+type DashboardResponse = {
+  settings: {
+    library_system: string | null;
+    preferred_formats: string[];
+    updated_at: string;
+  };
+  last_sync: {
+    source_type: string | null;
+    source_id: string | null;
+    last_synced_at: string | null;
+    last_sync_status: string | null;
+    last_sync_error: string | null;
+  };
+  page: {
+    limit: number;
+    offset: number;
+    total: number;
+  };
+  items: DashboardRow[];
 };
 
-function statusLabel(status: string) {
-  if (status === "available") return "Available";
-  if (status === "hold") return "On hold";
-  if (status === "not_owned") return "Not owned";
-  return status;
+type SortKey = "read_next" | "availability" | "title";
+
+type FilterKey = "all" | "available" | "hold" | "not_owned";
+
+function availabilityStatus(row: DashboardRow): FilterKey {
+  if (!row.match) return "not_owned";
+  if (row.availability.some((a) => a.status === "available")) return "available";
+  if (row.availability.some((a) => a.status === "hold")) return "hold";
+  return "not_owned";
 }
 
-function pillClass(status: string) {
-  if (status === "available") return "bg-emerald-100 text-emerald-900";
-  if (status === "hold") return "bg-amber-100 text-amber-900";
-  if (status === "not_owned") return "bg-slate-100 text-slate-900";
-  return "bg-slate-100 text-slate-900";
+function availabilityRank(row: DashboardRow): number {
+  const s = availabilityStatus(row);
+  if (s === "available") return 3;
+  if (s === "hold") return 2;
+  if (s === "not_owned") return 1;
+  return 0;
 }
 
-export default function DashboardPage() {
-  const router = useRouter();
-  const [data, setData] = useState<DashboardResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export default async function DashboardPage() {
+  const data = await apiFetch<DashboardResponse>(`/v1/dashboard?limit=200&offset=0&sort=read_next`);
 
-  const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [sort, setSort] = useState<string>("title");
+  // Default sort is Read Next
+  const defaultSort: SortKey = "read_next";
+  const defaultFilter: FilterKey = "all";
 
-  async function load() {
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await apiFetch<DashboardResponse>("/v1/dashboard?limit=200&offset=0");
-      setData(res);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to load dashboard.";
-      setError(msg);
-    } finally {
-      setLoading(false);
+  const rows = [...data.items];
+
+  const sorted = rows.sort((a, b) => {
+    if (defaultSort === "read_next") return compareReadNext(a, b);
+    if (defaultSort === "availability") {
+      const ra = availabilityRank(a);
+      const rb = availabilityRank(b);
+      if (ra !== rb) return rb - ra;
+      return a.title.localeCompare(b.title);
     }
-  }
+    return a.title.localeCompare(b.title);
+  });
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  const items = useMemo(() => {
-    if (!data) return [];
-    let rows = data.items;
-
-    const q = query.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter((r) => {
-        const hay = `${r.title} ${r.author ?? ""}`.toLowerCase();
-        return hay.includes(q);
-      });
-    }
-
-    if (statusFilter !== "all") {
-      rows = rows.filter((r) => {
-        if (statusFilter === "unmatched") return !r.match;
-        return r.availability.some((a) => a.status === statusFilter);
-      });
-    }
-
-    const sortKey = sort;
-    rows = [...rows].sort((a, b) => {
-      if (sortKey === "title") return a.title.localeCompare(b.title);
-      if (sortKey === "confidence") return (b.match?.confidence ?? -1) - (a.match?.confidence ?? -1);
-      if (sortKey === "availability") {
-        const score = (r: DashboardRow) => {
-          if (!r.match) return -2;
-          if (r.availability.some((x) => x.status === "available")) return 2;
-          if (r.availability.some((x) => x.status === "hold")) return 1;
-          return 0;
-        };
-        return score(b) - score(a);
-      }
-      return 0;
-    });
-
-    return rows;
-  }, [data, query, statusFilter, sort]);
-
-  const settings = data?.settings;
-  const lastSync = data?.last_sync;
+  const filtered = sorted.filter((r) => {
+    if (defaultFilter === "all") return true;
+    return availabilityStatus(r) === defaultFilter;
+  });
 
   return (
-    <AuthGuard>
-      <main className="min-h-screen px-6 py-10">
-        <div className="mx-auto flex max-w-6xl flex-col gap-8">
-          <header className="flex flex-col gap-3 rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h1 className="font-display text-3xl tracking-tight">Dashboard</h1>
-                <p className="text-sm text-black/60">Your shelf, matched to your library.</p>
-              </div>
-              <div className="flex items-center gap-2 text-sm">
-                <Link className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5" href="/settings">
-                  Preferences
-                </Link>
-                <Link
-                  className="rounded-full border border-black/10 px-4 py-2 hover:bg-black/5"
-                  href="/settings/goodreads"
-                >
-                  Import/Connect
-                </Link>
-                <button
-                  onClick={load}
-                  className="rounded-full bg-black px-4 py-2 text-white hover:bg-black/90"
-                >
-                  Refresh
-                </button>
-              </div>
-            </div>
-
-            {settings?.library_system ? (
-              <div className="text-sm text-black/70">
-                <span className="font-medium">Library:</span> {settings.library_system} ·{" "}
-                <span className="font-medium">Formats:</span> {settings.preferred_formats.join(", ") || "ebook"}
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
-                Pick a library in <Link className="underline" href="/settings">Preferences</Link> to enable availability.
-              </div>
-            )}
-
-            {lastSync?.last_synced_at ? (
-              <div className="text-xs text-black/60">
-                Last shelf sync: {new Date(lastSync.last_synced_at).toLocaleString()} ({lastSync.source_type})
-                {lastSync.last_sync_status === "error" ? ` · error: ${lastSync.last_sync_error}` : ""}
-              </div>
-            ) : (
-              <div className="text-xs text-black/60">No shelf connected yet. Use Import/Connect.</div>
-            )}
-          </header>
-
-          <section className="rounded-3xl border border-black/10 bg-white/70 p-6 shadow-sm">
-            <div className="mb-4 flex flex-wrap items-center gap-3">
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search title/author…"
-                className="w-full max-w-sm rounded-2xl border border-black/10 bg-white px-4 py-2 text-sm"
-              />
-
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm"
-              >
-                <option value="all">All</option>
-                <option value="available">Available</option>
-                <option value="hold">Hold</option>
-                <option value="not_owned">Not owned</option>
-                <option value="unmatched">Unmatched</option>
-              </select>
-
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value)}
-                className="rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm"
-              >
-                <option value="title">Sort: Title</option>
-                <option value="availability">Sort: Availability</option>
-                <option value="confidence">Sort: Match confidence</option>
-              </select>
-            </div>
-
-            {loading ? <div className="text-sm text-black/60">Loading…</div> : null}
-            {error ? (
-              <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
-                {error.includes("429") ? "Too many requests. Please try again in a moment." : error}
-              </div>
-            ) : null}
-
-            {!loading && !error && items.length === 0 ? (
-              <div className="text-sm text-black/60">No items yet. Import a shelf to get started.</div>
-            ) : null}
-
-            {!loading && !error && items.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full table-auto border-collapse text-left text-sm">
-                  <thead className="text-xs uppercase tracking-wide text-black/50">
-                    <tr>
-                      <th className="py-3 pr-4">Book</th>
-                      <th className="py-3 pr-4">Shelf</th>
-                      <th className="py-3 pr-4">Match</th>
-                      <th className="py-3 pr-4">Availability</th>
-                      <th className="py-3"> </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((row) => (
-                      <tr key={row.shelf_item_id} className="border-t border-black/5">
-                        <td className="py-3 pr-4">
-                          <div className="font-medium">{row.title}</div>
-                          <div className="text-xs text-black/60">{row.author ?? "Unknown author"}</div>
-                        </td>
-                        <td className="py-3 pr-4 text-xs text-black/70">{row.shelf ?? "—"}</td>
-                        <td className="py-3 pr-4 text-xs">
-                          {row.match ? (
-                            <span>
-                              {Math.round(row.match.confidence * 100)}% · {row.match.method}
-                            </span>
-                          ) : (
-                            <span className="text-black/50">Unmatched</span>
-                          )}
-                        </td>
-                        <td className="py-3 pr-4">
-                          <div className="flex flex-wrap gap-2">
-                            {row.match ? (
-                              row.availability.length ? (
-                                row.availability.map((a) => (
-                                  <span
-                                    key={`${row.shelf_item_id}:${a.format}`}
-                                    className={`rounded-full px-3 py-1 text-xs ${pillClass(a.status)}`}
-                                    title={`${a.format} · ${statusLabel(a.status)}`}
-                                  >
-                                    {a.format}: {statusLabel(a.status)}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-900">
-                                  {settings?.library_system ? "Checking…" : "Select library"}
-                                </span>
-                              )
-                            ) : (
-                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-900">
-                                Run matching
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="py-3">
-                          <button
-                            className="rounded-full border border-black/10 px-4 py-2 text-xs hover:bg-black/5"
-                            onClick={() => router.push(`/books/${row.shelf_item_id}`)}
-                          >
-                            View
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-          </section>
-
-          <footer className="text-xs text-black/50">
-            Tip: repeated refreshes within the cache TTL should not trigger provider calls.
-          </footer>
+    <main className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+          <p className="text-sm text-gray-600">
+            Sorted by <span className="font-medium">Read Next</span>. This ranking prioritizes
+            items available now, then shorter hold queues, using your format preferences.
+          </p>
+          <p className="text-xs text-gray-500 mt-1">
+            Tip: hover ⓘ to see the explanation (tier, format, queue details).
+          </p>
         </div>
-      </main>
-    </AuthGuard>
+        <Link href="/settings" className="px-3 py-2 rounded border text-sm hover:bg-gray-50">
+          Settings
+        </Link>
+      </div>
+
+      <div className="mt-4 rounded border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 text-gray-700">
+            <tr>
+              <th className="text-left p-3">Title</th>
+              <th className="text-left p-3">Shelf</th>
+              <th className="text-left p-3">Availability</th>
+              <th className="text-left p-3">Read Next</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((row) => {
+              const status = availabilityStatus(row);
+              const rnTitle = readNextTooltip(row.read_next);
+              return (
+                <tr key={row.shelf_item_id} className="border-t">
+                  <td className="p-3">
+                    <div className="flex items-center gap-2">
+                      <Link href={`/books/${row.shelf_item_id}`} className="font-medium hover:underline">
+                        {row.title}
+                      </Link>
+                      <span
+                        className="text-xs text-gray-500 cursor-help"
+                        title={rnTitle}
+                        aria-label="Read Next explanation"
+                      >
+                        ⓘ
+                      </span>
+                    </div>
+                    {row.author ? <div className="text-gray-600">{row.author}</div> : null}
+                    {row.needs_fuzzy_match ? (
+                      <div className="text-xs text-amber-700 mt-1">Needs fuzzy match</div>
+                    ) : null}
+                  </td>
+                  <td className="p-3">{row.shelf ?? "—"}</td>
+                  <td className="p-3">
+                    <div className="capitalize">{status.replace("_", " ")}</div>
+                    {row.availability.length ? (
+                      <div className="text-xs text-gray-600 mt-1">
+                        {row.availability
+                          .map((a) => {
+                            const bits = [a.format, a.status];
+                            if (a.status === "available" && a.copies_available != null) {
+                              bits.push(`${a.copies_available} available`);
+                            }
+                            if (a.status === "hold" && a.holds != null) {
+                              bits.push(`${a.holds} holds`);
+                            }
+                            return bits.join(" • ");
+                          })
+                          .join(" | ")}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="p-3">
+                    <div className="capitalize">{row.read_next.tier.replace("_", " ")}</div>
+                    <div className="text-xs text-gray-600 mt-1">Score: {row.read_next.score.toFixed(1)}</div>
+                    {row.read_next.best_format ? (
+                      <div className="text-xs text-gray-600">Best: {row.read_next.best_format}</div>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-6 text-xs text-gray-600">
+        <p>
+          <span className="font-medium">How Read Next works:</span> Available now → Holds → Not owned.
+          Within a tier, your preferred format order matters, and hold queue size breaks ties.
+        </p>
+      </div>
+    </main>
   );
 }
