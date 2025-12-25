@@ -5,6 +5,8 @@ from app.core.config import settings
 from app.core.otel import init_otel
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes.notifications import router as notifications_router
+
 
 app = FastAPI(title=settings.api_name)
 
@@ -17,5 +19,6 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(notifications_router)
 
 init_otel(app)

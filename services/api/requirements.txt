@@ -29,3 +29,4 @@ python-jose[cryptography]
 pydantic-settings
 email-validator
 python-multipart
+APScheduler==3.11.2

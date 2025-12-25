@@ -25,6 +25,10 @@ from app.services.shelf_import import upsert_shelf_items
 from app.workers.async_utils import run_async
 from app.workers.events import publish_sync_event
 from sqlalchemy.orm import Session
+from sqlalchemy import select
+
+from app.models.shelf_item import ShelfItem
+from app.workers.events import publish_notification_event
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +58,31 @@ def availability_refresh_job(sync_run_id: str) -> None:
             upsert_snapshots(db, user_id=run.user_id, results=results)
             processed += len(chunk)
 
-            update_progress(db, run=run, current=processed)
+
+            created = upsert_snapshots(db, user_id=run.user_id, results=results)
+            processed += len(chunk)
+
+            update_progress(db, run=run, current=processed)  # typically commits
+
+            if created:
+                # Hydrate titles for nicer live notifications
+                ids = [c.shelf_item_id for c in created]
+                items = (
+                    db.execute(select(ShelfItem.id, ShelfItem.title).where(ShelfItem.id.in_(ids)))
+                    .all()
+                )
+                id_to_title = {sid: title for sid, title in items}
+
+                for c in created:
+                    publish_notification_event(
+                        user_id=run.user_id,
+                        payload={
+                            "id": c.id,
+                            "shelf_item_id": c.shelf_item_id,
+                            "title": id_to_title.get(c.shelf_item_id, ""),
+                            "format": c.format,
+                        },
+                    )
             publish_sync_event(
                 user_id=run.user_id,
                 run_id=run.id,

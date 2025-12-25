@@ -19,3 +19,14 @@ def publish_sync_event(
         "ts": datetime.utcnow().isoformat() + "Z",
     }
     r.publish(channel, json.dumps(body))
+
+
+def publish_notification_event(*, user_id: str, payload: dict[str, Any]) -> None:
+    r = get_redis(settings.redis_url)
+    channel = f"notify:{user_id}"
+    body = {
+        "type": "notification",
+        "payload": payload,
+        "ts": datetime.utcnow().isoformat() + "Z",
+    }
+    r.publish(channel, json.dumps(body))
