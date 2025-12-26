@@ -46,23 +46,18 @@ def upsert_snapshots(
 
     # Map catalog_item_id -> shelf_item_id for this user
     catalog_ids = {r.catalog_item_id for r in results_list}
-    match_rows = (
-        db.execute(
-            select(CatalogMatch.catalog_item_id, CatalogMatch.shelf_item_id)
-            .where(
-                CatalogMatch.user_id == user_id,
-                CatalogMatch.catalog_item_id.in_(list(catalog_ids)),
-            )
+    match_rows = db.execute(
+        select(CatalogMatch.catalog_item_id, CatalogMatch.shelf_item_id).where(
+            CatalogMatch.user_id == user_id,
+            CatalogMatch.catalog_item_id.in_(list(catalog_ids)),
         )
-        .all()
-    )
+    ).all()
     catalog_to_shelf = {cid: sid for cid, sid in match_rows}
 
     # Preload existing snapshots for quick compare
     existing_rows = (
         db.execute(
-            select(AvailabilitySnapshot)
-            .where(
+            select(AvailabilitySnapshot).where(
                 AvailabilitySnapshot.user_id == user_id,
                 AvailabilitySnapshot.catalog_item_id.in_(list(catalog_ids)),
             )

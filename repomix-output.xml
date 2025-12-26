@@ -267,712 +267,6 @@ SECURITY.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path="apps/web/src/app/notifications/page.tsx">
-"use client";
-
-import Link from "next/link";
-import { useEffect, useState } from "react";
-
-import { AuthGuard } from "@/components/AuthGuard";
-import { apiFetch } from "@/lib/api";
-
-type NotificationOut = {
-  id: string;
-  created_at: string;
-  read_at: string | null;
-  shelf_item_id: string;
-  title: string;
-  author: string | null;
-  format: string;
-  old_status: string;
-  new_status: string;
-  deep_link: string | null;
-};
-
-type NotificationListOut = {
-  page: { total: number; limit: number; offset: number };
-  items: NotificationOut[];
-};
-
-export default function NotificationsPage() {
-  const [data, setData] = useState<NotificationListOut | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [unreadOnly, setUnreadOnly] = useState(true);
-
-  async function load() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiFetch<NotificationListOut>(
-        `/v1/notifications?limit=100&offset=0&unread_only=${unreadOnly ? "true" : "false"}`
-      );
-      setData(res);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unreadOnly]);
-
-  async function markRead(id: string) {
-    await apiFetch<void>(`/v1/notifications/${id}/read`, { method: "POST" });
-    await load();
-  }
-
-  async function markAllRead() {
-    await apiFetch<{ updated: number }>(`/v1/notifications/mark-all-read`, { method: "POST" });
-    await load();
-  }
-
-  return (
-    <AuthGuard>
-      <main className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <Link href="/dashboard" className="text-sm text-blue-600 hover:underline">
-              ← Back to dashboard
-            </Link>
-            <h1 className="text-2xl font-semibold mt-2">Notifications</h1>
-            <p className="text-sm text-gray-600">Items that became available recently.</p>
-          </div>
-          <button
-            onClick={markAllRead}
-            className="rounded border px-3 py-2 text-sm hover:bg-gray-50"
-          >
-            Mark all read
-          </button>
-        </div>
-
-        <div className="mt-4 flex items-center gap-2 text-sm">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={unreadOnly}
-              onChange={(e) => setUnreadOnly(e.target.checked)}
-            />
-            Show unread only
-          </label>
-        </div>
-
-        {loading ? <div className="mt-6 text-sm text-gray-600">Loading…</div> : null}
-        {error ? <div className="mt-6 text-sm text-red-600">{error}</div> : null}
-
-        {!loading && data && data.items.length === 0 ? (
-          <div className="mt-6 rounded border p-4 text-sm text-gray-600">No notifications yet.</div>
-        ) : null}
-
-        <div className="mt-6 space-y-3">
-          {data?.items.map((n) => (
-            <div key={n.id} className="rounded border p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="text-sm text-gray-500">
-                    {new Date(n.created_at).toLocaleString()} • {n.format}
-                  </div>
-                  <div className="mt-1 font-medium">
-                    <Link href={`/books/${n.shelf_item_id}`} className="hover:underline">
-                      {n.title}
-                    </Link>
-                  </div>
-                  {n.author ? <div className="text-sm text-gray-600">{n.author}</div> : null}
-
-                  <div className="mt-2 text-sm">
-                    <span className="font-medium">Status:</span> {n.old_status} → {n.new_status}
-                  </div>
-
-                  {n.deep_link ? (
-                    <div className="mt-2">
-                      <a
-                        href={n.deep_link}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-sm text-blue-600 hover:underline"
-                      >
-                        Open in library
-                      </a>
-                    </div>
-                  ) : null}
-                </div>
-
-                {n.read_at ? (
-                  <span className="text-xs text-gray-500">Read</span>
-                ) : (
-                  <button
-                    onClick={() => markRead(n.id)}
-                    className="rounded border px-3 py-2 text-sm hover:bg-gray-50"
-                  >
-                    Mark read
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </main>
-    </AuthGuard>
-  );
-}
-</file>
-
-<file path="apps/web/src/components/NotificationBell.tsx">
-"use client";
-
-import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-
-import { apiFetch } from "@/lib/api";
-
-type UnreadCountOut = { unread: number };
-
-export function NotificationBell() {
-  const [unread, setUnread] = useState<number>(0);
-  const startedRef = useRef(false);
-
-  async function loadCount() {
-    try {
-      const res = await apiFetch<UnreadCountOut>("/v1/notifications/unread-count");
-      setUnread(res.unread);
-    } catch {
-      // ignore
-    }
-  }
-
-  useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
-
-    let alive = true;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-    loadCount();
-
-    // Live updates (SSE). If it fails, fall back to polling.
-    const url = `/api/proxy/sse?path=${encodeURIComponent("/v1/notifications/events")}`;
-    const es = new EventSource(url);
-
-    es.onmessage = (evt) => {
-      if (!alive) return;
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg?.type === "notification") {
-          setUnread((n) => n + 1);
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    es.onerror = () => {
-      if (!alive) return;
-      es.close();
-
-      // fallback polling every 30s
-      if (!pollTimer) {
-        pollTimer = setInterval(() => {
-          if (!alive) return;
-          loadCount();
-        }, 30_000);
-      }
-    };
-
-    return () => {
-      alive = false;
-      es.close();
-      if (pollTimer) clearInterval(pollTimer);
-    };
-  }, []);
-
-  return (
-    <Link
-      href="/notifications"
-      className="relative inline-flex items-center justify-center rounded border px-3 py-2 text-sm hover:bg-gray-50"
-      aria-label="Notifications"
-      title="Notifications"
-    >
-      <span aria-hidden>🔔</span>
-      {unread > 0 ? (
-        <span className="absolute -top-2 -right-2 min-w-[1.25rem] h-5 px-1 rounded-full bg-red-600 text-white text-xs flex items-center justify-center">
-          {unread}
-        </span>
-      ) : null}
-    </Link>
-  );
-}
-</file>
-
-<file path="services/api/alembic/versions/06ccc00c800a_phase7_notifications.py">
-"""phase7 notifications
-
-Revision ID: 06ccc00c800a
-Revises: 32191e629780
-Create Date: 2025-12-25 14:42:40.739694
-
-"""
-from typing import Sequence, Union
-
-from alembic import op
-import sqlalchemy as sa
-
-
-# revision identifiers, used by Alembic.
-revision: str = '06ccc00c800a'
-down_revision: Union[str, Sequence[str], None] = '32191e629780'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
-
-
-def upgrade() -> None:
-    """Upgrade schema."""
-    pass
-
-
-def downgrade() -> None:
-    """Downgrade schema."""
-    pass
-</file>
-
-<file path="services/api/app/api/routes/notifications.py">
-from __future__ import annotations
-
-import json
-from datetime import datetime, timezone
-from typing import AsyncGenerator
-
-from app.api.deps import get_current_user
-from app.api.rate_limit import rate_limiter
-from app.core.config import settings
-from app.core.redis import get_redis_async
-from app.crud.notifications import list_notifications, mark_all_read, mark_read, unread_count
-from app.db.session import get_db
-from app.schemas.notifications import (
-    NotificationListOut,
-    NotificationOut,
-    PageOut,
-    UnreadCountOut,
-)
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
-
-router = APIRouter(prefix="/v1", tags=["notifications"])
-
-
-@router.get(
-    "/notifications",
-    response_model=NotificationListOut,
-    dependencies=[Depends(rate_limiter("notifications", limit=120, window_seconds=60))],
-)
-def get_notifications(
-    *,
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    unread_only: bool = Query(False),
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    total, rows = list_notifications(
-        db,
-        user_id=user.id,
-        unread_only=unread_only,
-        limit=limit,
-        offset=offset,
-    )
-
-    items = [
-        NotificationOut(
-            id=r.event.id,
-            created_at=r.event.created_at,
-            read_at=r.event.read_at,
-            shelf_item_id=r.event.shelf_item_id,
-            title=r.title,
-            author=r.author,
-            format=r.event.format,
-            old_status=r.event.old_status,
-            new_status=r.event.new_status,
-            deep_link=r.event.deep_link,
-        )
-        for r in rows
-    ]
-
-    return NotificationListOut(page=PageOut(limit=limit, offset=offset, total=total), items=items)
-
-
-@router.get(
-    "/notifications/unread-count",
-    response_model=UnreadCountOut,
-    dependencies=[Depends(rate_limiter("notifications_unread", limit=240, window_seconds=60))],
-)
-def get_unread_count(
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    return UnreadCountOut(unread=unread_count(db, user_id=user.id))
-
-
-@router.post(
-    "/notifications/{notification_id}/read",
-    status_code=204,
-    dependencies=[Depends(rate_limiter("notifications_mark_read", limit=240, window_seconds=60))],
-)
-def mark_notification_read(
-    notification_id: str,
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    ok = mark_read(db, user_id=user.id, notification_id=notification_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    return None
-
-
-@router.post(
-    "/notifications/mark-all-read",
-    dependencies=[Depends(rate_limiter("notifications_mark_all", limit=60, window_seconds=60))],
-)
-def mark_all_notifications_read(
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    n = mark_all_read(db, user_id=user.id)
-    return {"updated": n}
-
-
-@router.get("/notifications/events")
-async def stream_notifications(
-    user=Depends(get_current_user),
-) -> StreamingResponse:
-    redis_client = get_redis_async(settings.redis_url)
-    channel = f"notify:{user.id}"
-
-    async def event_generator() -> AsyncGenerator[str, None]:
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe(channel)
-
-        # Basic keepalive to help proxies (optional)
-        last_keepalive = datetime.now(timezone.utc)
-
-        try:
-            async for message in pubsub.listen():
-                now = datetime.now(timezone.utc)
-
-                # Keepalive comment every ~25s
-                if (now - last_keepalive).total_seconds() > 25:
-                    yield ": keepalive\n\n"
-                    last_keepalive = now
-
-                if message is None:
-                    continue
-                if message.get("type") != "message":
-                    continue
-
-                data_raw = message.get("data")
-                if isinstance(data_raw, (bytes, bytearray)):
-                    data_str = data_raw.decode("utf-8")
-                else:
-                    data_str = str(data_raw)
-
-                payload = json.loads(data_str)
-                payload.setdefault("ts", now.isoformat())
-
-                yield f"data: {json.dumps(payload)}\n\n"
-        finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.close()
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-</file>
-
-<file path="services/api/app/crud/notifications.py">
-from __future__ import annotations
-
-from dataclasses import dataclass
-from datetime import datetime, timezone
-
-from app.models.notification_event import NotificationEvent
-from app.models.shelf_item import ShelfItem
-from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-@dataclass(frozen=True)
-class NotificationRow:
-    event: NotificationEvent
-    title: str
-    author: str | None
-
-
-def unread_count(db: Session, *, user_id: str) -> int:
-    return int(
-        db.execute(
-            select(func.count())
-            .select_from(NotificationEvent)
-            .where(NotificationEvent.user_id == user_id, NotificationEvent.read_at.is_(None))
-        ).scalar_one()
-    )
-
-
-def list_notifications(
-    db: Session,
-    *,
-    user_id: str,
-    unread_only: bool,
-    limit: int,
-    offset: int,
-) -> tuple[int, list[NotificationRow]]:
-    base = (
-        select(NotificationEvent, ShelfItem.title, ShelfItem.author)
-        .join(ShelfItem, ShelfItem.id == NotificationEvent.shelf_item_id)
-        .where(NotificationEvent.user_id == user_id)
-    )
-    if unread_only:
-        base = base.where(NotificationEvent.read_at.is_(None))
-
-    total = int(db.execute(select(func.count()).select_from(base.subquery())).scalar_one())
-
-    stmt = base.order_by(NotificationEvent.created_at.desc()).limit(limit).offset(offset)
-
-    rows: list[NotificationRow] = []
-    for ev, title, author in db.execute(stmt).all():
-        rows.append(NotificationRow(event=ev, title=title, author=author))
-
-    return total, rows
-
-
-def mark_read(db: Session, *, user_id: str, notification_id: str) -> bool:
-    ev = db.get(NotificationEvent, notification_id)
-    if ev is None or ev.user_id != user_id:
-        return False
-
-    if ev.read_at is None:
-        ev.read_at = utcnow()
-        db.add(ev)
-        db.commit()
-    return True
-
-
-def mark_all_read(db: Session, *, user_id: str) -> int:
-    now = utcnow()
-    res = db.execute(
-        update(NotificationEvent)
-        .where(NotificationEvent.user_id == user_id, NotificationEvent.read_at.is_(None))
-        .values(read_at=now)
-    )
-    db.commit()
-    return int(res.rowcount or 0)
-</file>
-
-<file path="services/api/app/models/notification_event.py">
-from __future__ import annotations
-
-from datetime import datetime, timezone
-from uuid import uuid4
-
-from app.models.base import Base
-from sqlalchemy import DateTime, ForeignKey, String
-from sqlalchemy.orm import Mapped, mapped_column
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class NotificationEvent(Base):
-    __tablename__ = "notification_events"
-
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid4())
-    )
-
-    user_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    shelf_item_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("shelf_items.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    format: Mapped[str] = mapped_column(String(20), nullable=False)
-    old_status: Mapped[str] = mapped_column(String(20), nullable=False)
-    new_status: Mapped[str] = mapped_column(String(20), nullable=False)
-
-    deep_link: Mapped[str | None] = mapped_column(String(500), nullable=True)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False, index=True
-    )
-    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-</file>
-
-<file path="services/api/app/schemas/notifications.py">
-from __future__ import annotations
-
-from datetime import datetime
-
-from pydantic import BaseModel
-
-
-class NotificationOut(BaseModel):
-    id: str
-    created_at: datetime
-    read_at: datetime | None
-
-    shelf_item_id: str
-    title: str
-    author: str | None
-
-    format: str
-    old_status: str
-    new_status: str
-    deep_link: str | None
-
-
-class PageOut(BaseModel):
-    limit: int
-    offset: int
-    total: int
-
-
-class NotificationListOut(BaseModel):
-    page: PageOut
-    items: list[NotificationOut]
-
-
-class UnreadCountOut(BaseModel):
-    unread: int
-</file>
-
-<file path="services/api/tests/test_notifications.py">
-from app.crud.availability import upsert_snapshots
-from app.models import AvailabilitySnapshot, CatalogItem, CatalogMatch, ShelfItem, User, UserSettings
-from app.providers.types import AvailabilityResult
-from app.services.catalog.types import ProviderAvailability, Format, AvailabilityStatus
-
-
-def test_notification_created_on_hold_to_available(db_session):
-    user = User(email="a@example.com", hashed_password="x")
-    db_session.add(user)
-    db_session.commit()
-
-    db_session.add(
-        UserSettings(
-            user_id=user.id,
-            library_system="demo",
-            preferred_formats=["ebook"],
-            notifications_enabled=True,
-        )
-    )
-
-    shelf_item = ShelfItem(user_id=user.id, title="T", author="A")
-    db_session.add(shelf_item)
-
-    catalog_item = CatalogItem(
-        id="c1",
-        provider="fixture",
-        provider_item_id="p1",
-        title="T",
-        author="A",
-    )
-    db_session.add(catalog_item)
-
-    db_session.add(
-        CatalogMatch(
-            user_id=user.id,
-            shelf_item_id=shelf_item.id,
-            catalog_item_id=catalog_item.id,
-            provider="fixture",
-            method="exact",
-            confidence=1.0,
-        )
-    )
-
-    # Existing snapshot: hold
-    db_session.add(
-        AvailabilitySnapshot(
-            user_id=user.id,
-            catalog_item_id=catalog_item.id,
-            format="ebook",
-            status="hold",
-            copies_available=0,
-            copies_total=1,
-            holds=5,
-            deep_link=None,
-            last_checked_at=None,
-        )
-    )
-    db_session.commit()
-
-    # New result: available
-    a = ProviderAvailability(
-        provider="fixture",
-        provider_item_id="p1",
-        format=Format.ebook,
-        status=AvailabilityStatus.available,
-        copies_available=1,
-        copies_total=1,
-        holds=0,
-        deep_link=None,
-    )
-
-    created = upsert_snapshots(
-        db_session,
-        user_id=user.id,
-        results=[AvailabilityResult(catalog_item_id=catalog_item.id, availability=a)],
-    )
-
-    assert len(created) == 1
-
-
-def test_notifications_respect_user_setting(db_session):
-    user = User(email="b@example.com", hashed_password="x")
-    db_session.add(user)
-    db_session.commit()
-
-    db_session.add(
-        UserSettings(
-            user_id=user.id,
-            library_system="demo",
-            preferred_formats=["ebook"],
-            notifications_enabled=False,
-        )
-    )
-    db_session.commit()
-
-    a = ProviderAvailability(
-        provider="fixture",
-        provider_item_id="p1",
-        format=Format.ebook,
-        status=AvailabilityStatus.available,
-        copies_available=1,
-        copies_total=1,
-        holds=0,
-        deep_link=None,
-    )
-
-    created = upsert_snapshots(
-        db_session,
-        user_id=user.id,
-        results=[AvailabilityResult(catalog_item_id="c1", availability=a)],
-    )
-
-    assert created == []
-</file>
-
 <file path=".github/ISSUE_TEMPLATE/bug_report.yml">
 name: Bug report
 description: Report a problem
@@ -1135,41 +429,6 @@ updates:
 ## Notes
 </file>
 
-<file path="apps/web/src/app/api/proxy/sse/route.ts">
-import { NextRequest } from "next/server";
-
-export const runtime = "nodejs";
-
-export async function GET(req: NextRequest) {
-  const path = req.nextUrl.searchParams.get("path");
-  if (!path) {
-    return new Response("Missing path", { status: 400 });
-  }
-
-  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
-  const targetUrl = new URL(path, apiBase);
-
-  const res = await fetch(targetUrl, {
-    method: "GET",
-    headers: {
-      // forward cookies for auth
-      cookie: req.headers.get("cookie") || "",
-      accept: "text/event-stream",
-    },
-    cache: "no-store",
-  });
-
-  return new Response(res.body, {
-    status: res.status,
-    headers: {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    },
-  });
-}
-</file>
-
 <file path="apps/web/src/app/dashboard/matches/page.tsx">
 "use client";
 
@@ -1320,6 +579,159 @@ export default function MatchesPage() {
         )}
       </div>
     </div>
+  );
+}
+</file>
+
+<file path="apps/web/src/app/notifications/page.tsx">
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+import { AuthGuard } from "@/components/AuthGuard";
+import { apiFetch } from "@/lib/api";
+
+type NotificationOut = {
+  id: string;
+  created_at: string;
+  read_at: string | null;
+  shelf_item_id: string;
+  title: string;
+  author: string | null;
+  format: string;
+  old_status: string;
+  new_status: string;
+  deep_link: string | null;
+};
+
+type NotificationListOut = {
+  page: { total: number; limit: number; offset: number };
+  items: NotificationOut[];
+};
+
+export default function NotificationsPage() {
+  const [data, setData] = useState<NotificationListOut | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [unreadOnly, setUnreadOnly] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch<NotificationListOut>(
+        `/v1/notifications?limit=100&offset=0&unread_only=${unreadOnly ? "true" : "false"}`
+      );
+      setData(res);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unreadOnly]);
+
+  async function markRead(id: string) {
+    await apiFetch<void>(`/v1/notifications/${id}/read`, { method: "POST" });
+    await load();
+  }
+
+  async function markAllRead() {
+    await apiFetch<{ updated: number }>(`/v1/notifications/mark-all-read`, { method: "POST" });
+    await load();
+  }
+
+  return (
+    <AuthGuard>
+      <main className="p-6 max-w-4xl mx-auto">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <Link href="/dashboard" className="text-sm text-blue-600 hover:underline">
+              ← Back to dashboard
+            </Link>
+            <h1 className="text-2xl font-semibold mt-2">Notifications</h1>
+            <p className="text-sm text-gray-600">Items that became available recently.</p>
+          </div>
+          <button
+            onClick={markAllRead}
+            className="rounded border px-3 py-2 text-sm hover:bg-gray-50"
+          >
+            Mark all read
+          </button>
+        </div>
+
+        <div className="mt-4 flex items-center gap-2 text-sm">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={unreadOnly}
+              onChange={(e) => setUnreadOnly(e.target.checked)}
+            />
+            Show unread only
+          </label>
+        </div>
+
+        {loading ? <div className="mt-6 text-sm text-gray-600">Loading…</div> : null}
+        {error ? <div className="mt-6 text-sm text-red-600">{error}</div> : null}
+
+        {!loading && data && data.items.length === 0 ? (
+          <div className="mt-6 rounded border p-4 text-sm text-gray-600">No notifications yet.</div>
+        ) : null}
+
+        <div className="mt-6 space-y-3">
+          {data?.items.map((n) => (
+            <div key={n.id} className="rounded border p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm text-gray-500">
+                    {new Date(n.created_at).toLocaleString()} • {n.format}
+                  </div>
+                  <div className="mt-1 font-medium">
+                    <Link href={`/books/${n.shelf_item_id}`} className="hover:underline">
+                      {n.title}
+                    </Link>
+                  </div>
+                  {n.author ? <div className="text-sm text-gray-600">{n.author}</div> : null}
+
+                  <div className="mt-2 text-sm">
+                    <span className="font-medium">Status:</span> {n.old_status} → {n.new_status}
+                  </div>
+
+                  {n.deep_link ? (
+                    <div className="mt-2">
+                      <a
+                        href={n.deep_link}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm text-blue-600 hover:underline"
+                      >
+                        Open in library
+                      </a>
+                    </div>
+                  ) : null}
+                </div>
+
+                {n.read_at ? (
+                  <span className="text-xs text-gray-500">Read</span>
+                ) : (
+                  <button
+                    onClick={() => markRead(n.id)}
+                    className="rounded border px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    Mark read
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </main>
+    </AuthGuard>
   );
 }
 </file>
@@ -1998,6 +1410,92 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 </file>
 
+<file path="apps/web/src/components/NotificationBell.tsx">
+"use client";
+
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+
+import { apiFetch } from "@/lib/api";
+
+type UnreadCountOut = { unread: number };
+
+export function NotificationBell() {
+  const [unread, setUnread] = useState<number>(0);
+  const startedRef = useRef(false);
+
+  async function loadCount() {
+    try {
+      const res = await apiFetch<UnreadCountOut>("/v1/notifications/unread-count");
+      setUnread(res.unread);
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+
+    let alive = true;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    loadCount();
+
+    // Live updates (SSE). If it fails, fall back to polling.
+    const url = `/api/proxy/sse?path=${encodeURIComponent("/v1/notifications/events")}`;
+    const es = new EventSource(url);
+
+    es.onmessage = (evt) => {
+      if (!alive) return;
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg?.type === "notification") {
+          setUnread((n) => n + 1);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    es.onerror = () => {
+      if (!alive) return;
+      es.close();
+
+      // fallback polling every 30s
+      if (!pollTimer) {
+        pollTimer = setInterval(() => {
+          if (!alive) return;
+          loadCount();
+        }, 30_000);
+      }
+    };
+
+    return () => {
+      alive = false;
+      es.close();
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, []);
+
+  return (
+    <Link
+      href="/notifications"
+      className="relative inline-flex items-center justify-center rounded border px-3 py-2 text-sm hover:bg-gray-50"
+      aria-label="Notifications"
+      title="Notifications"
+    >
+      <span aria-hidden>🔔</span>
+      {unread > 0 ? (
+        <span className="absolute -top-2 -right-2 min-w-[1.25rem] h-5 px-1 rounded-full bg-red-600 text-white text-xs flex items-center justify-center">
+          {unread}
+        </span>
+      ) : null}
+    </Link>
+  );
+}
+</file>
+
 <file path="apps/web/src/components/TryDemoButton.tsx">
 "use client";
 
@@ -2437,7 +1935,45 @@ Web -> API -> Goodreads + Library adapters -> normalized database -> jobs/stream
 </file>
 
 <file path="infra/docker-compose.full.yml">
+name: shelfsync
+
 services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: shelfsync
+      POSTGRES_PASSWORD: shelfsync
+      POSTGRES_DB: shelfsync
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shelfsync -d shelfsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  goodreads-mock:
+    image: stoplight/prism:5
+    command: ["mock", "-h", "0.0.0.0", "/spec/goodreads-mock.yaml"]
+    ports:
+      - "4010:4010"
+    volumes:
+      - ../docs/openapi/goodreads-mock.yaml:/spec/goodreads-mock.yaml:ro
+      - ../mock:/spec/mock:ro
+
   api:
     build:
       context: ../services/api
@@ -2445,6 +1981,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://shelfsync:shelfsync@postgres:5432/shelfsync
       REDIS_URL: redis://redis:6379/0
+      GOODREADS_BASE_URL: http://goodreads-mock:4010
     ports:
       - "8000:8000"
     depends_on:
@@ -2452,6 +1989,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      goodreads-mock:
+        condition: service_started
+
+volumes:
+  postgres_data:
 </file>
 
 <file path="infra/goodreads-mock.yaml">
@@ -2684,6 +2226,44 @@ trap 'echo "\nShutting down..."; kill $API_PID $WEB_PID; docker compose -f infra
 wait
 </file>
 
+<file path="services/api/alembic/versions/06ccc00c800a_phase7_notifications.py">
+"""phase7 notifications
+
+Revision ID: 06ccc00c800a
+Revises: 32191e629780
+Create Date: 2025-12-25 16:59:39.258811
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+# revision identifiers, used by Alembic.
+revision: str = "06ccc00c800a"
+down_revision: Union[str, None] = "32191e629780"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # Add per-user notifications toggle (default ON).
+    op.add_column(
+        "user_settings",
+        sa.Column(
+            "notifications_enabled",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.true(),
+        ),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("user_settings", "notifications_enabled")
+</file>
+
 <file path="services/api/alembic/versions/32191e629780_add_sync_runs_table.py">
 """add sync_runs table
 
@@ -2769,55 +2349,168 @@ def list_libraries(db: Session = Depends(get_db), user=Depends(get_current_user)
     return db.query(Library).order_by(Library.name.asc()).all()
 </file>
 
-<file path="services/api/app/api/routes/settings.py">
+<file path="services/api/app/api/routes/notifications.py">
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from typing import AsyncGenerator
+
 from app.api.deps import get_current_user
+from app.api.rate_limit import rate_limiter
+from app.core.config import settings
+from app.core.redis import get_redis_async
+from app.crud.notifications import (
+    list_notifications,
+    mark_all_read,
+    mark_read,
+    unread_count,
+)
 from app.db.session import get_db
-from app.models.user_settings import UserSettings
-from app.schemas.settings import SettingsPatchIn, UserSettingsOut
-from fastapi import APIRouter, Depends, HTTPException
+from app.schemas.notifications import (
+    NotificationListOut,
+    NotificationOut,
+    PageOut,
+    UnreadCountOut,
+)
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-router = APIRouter(prefix="/v1", tags=["settings"])
+router = APIRouter(prefix="/v1", tags=["notifications"])
 
 
-@router.get("/settings", response_model=UserSettingsOut)
-def get_settings(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    s = db.get(UserSettings, user.id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Settings not found")
-    return s
-
-
-@router.patch("/settings", response_model=UserSettingsOut)
-def patch_settings(
-    payload: SettingsPatchIn,
+@router.get(
+    "/notifications",
+    response_model=NotificationListOut,
+    dependencies=[Depends(rate_limiter("notifications", limit=120, window_seconds=60))],
+)
+def get_notifications(
+    *,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    unread_only: bool = Query(False),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    s = db.get(UserSettings, user.id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Settings not found")
+    total, rows = list_notifications(
+        db,
+        user_id=user.id,
+        unread_only=unread_only,
+        limit=limit,
+        offset=offset,
+    )
 
-    if payload.library_system is not None:
-        s.library_system = payload.library_system
+    items = [
+        NotificationOut(
+            id=r.event.id,
+            created_at=r.event.created_at,
+            read_at=r.event.read_at,
+            shelf_item_id=r.event.shelf_item_id,
+            title=r.title,
+            author=r.author,
+            format=r.event.format,
+            old_status=r.event.old_status,
+            new_status=r.event.new_status,
+            deep_link=r.event.deep_link,
+        )
+        for r in rows
+    ]
 
-    if payload.preferred_formats is not None:
-        # Normalize + de-dupe, keep stable order ebook->audiobook
-        want = []
-        for fmt in ["ebook", "audiobook"]:
-            if fmt in payload.preferred_formats:
-                want.append(fmt)
-        s.preferred_formats = want
-    
-    if payload.notifications_enabled is not None:
-        s.notifications_enabled = payload.notifications_enabled
+    return NotificationListOut(
+        page=PageOut(limit=limit, offset=offset, total=total), items=items
+    )
 
-    db.add(s)
-    db.commit()
-    db.refresh(s)
-    return s
+
+@router.get(
+    "/notifications/unread-count",
+    response_model=UnreadCountOut,
+    dependencies=[
+        Depends(rate_limiter("notifications_unread", limit=240, window_seconds=60))
+    ],
+)
+def get_unread_count(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return UnreadCountOut(unread=unread_count(db, user_id=user.id))
+
+
+@router.post(
+    "/notifications/{notification_id}/read",
+    status_code=204,
+    dependencies=[
+        Depends(rate_limiter("notifications_mark_read", limit=240, window_seconds=60))
+    ],
+)
+def mark_notification_read(
+    notification_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    ok = mark_read(db, user_id=user.id, notification_id=notification_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return None
+
+
+@router.post(
+    "/notifications/mark-all-read",
+    dependencies=[
+        Depends(rate_limiter("notifications_mark_all", limit=60, window_seconds=60))
+    ],
+)
+def mark_all_notifications_read(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    n = mark_all_read(db, user_id=user.id)
+    return {"updated": n}
+
+
+@router.get("/notifications/events")
+async def stream_notifications(
+    user=Depends(get_current_user),
+) -> StreamingResponse:
+    redis_client = get_redis_async(settings.redis_url)
+    channel = f"notify:{user.id}"
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(channel)
+
+        # Basic keepalive to help proxies (optional)
+        last_keepalive = datetime.now(timezone.utc)
+
+        try:
+            async for message in pubsub.listen():
+                now = datetime.now(timezone.utc)
+
+                # Keepalive comment every ~25s
+                if (now - last_keepalive).total_seconds() > 25:
+                    yield ": keepalive\n\n"
+                    last_keepalive = now
+
+                if message is None:
+                    continue
+                if message.get("type") != "message":
+                    continue
+
+                data_raw = message.get("data")
+                if isinstance(data_raw, (bytes, bytearray)):
+                    data_str = data_raw.decode("utf-8")
+                else:
+                    data_str = str(data_raw)
+
+                payload = json.loads(data_str)
+                payload.setdefault("ts", now.isoformat())
+
+                yield f"data: {json.dumps(payload)}\n\n"
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 </file>
 
 <file path="services/api/app/api/__init__.py">
@@ -2875,6 +2568,114 @@ def get_matches_for_shelf_item(
     stmt = stmt.order_by(CatalogMatch.confidence.desc(), CatalogMatch.updated_at.desc())
 
     return list(db.execute(stmt).scalars().all())
+</file>
+
+<file path="services/api/app/crud/notifications.py">
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, cast
+
+from app.models.notification_event import NotificationEvent
+from app.models.shelf_item import ShelfItem
+from sqlalchemy import func, select, update
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.orm import Session
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True)
+class NotificationRow:
+    event: NotificationEvent
+    title: str
+    author: str | None
+
+
+def unread_count(db: Session, *, user_id: str) -> int:
+    """Count unread notifications for a user.
+
+    Kept for compatibility with app.api.routes.notifications imports.
+    """
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(NotificationEvent)
+            .where(
+                NotificationEvent.user_id == user_id,
+                NotificationEvent.read_at.is_(None),
+            )
+        ).scalar_one()
+    )
+
+
+# Backwards/forwards compatibility if other code used a different name.
+count_unread = unread_count
+
+
+def list_notifications(
+    db: Session,
+    *,
+    user_id: str,
+    unread_only: bool,
+    limit: int,
+    offset: int,
+) -> tuple[int, list[NotificationRow]]:
+    base = (
+        select(NotificationEvent, ShelfItem.title, ShelfItem.author)
+        .join(ShelfItem, ShelfItem.id == NotificationEvent.shelf_item_id)
+        .where(NotificationEvent.user_id == user_id)
+    )
+    if unread_only:
+        base = base.where(NotificationEvent.read_at.is_(None))
+
+    total = int(
+        db.execute(select(func.count()).select_from(base.subquery())).scalar_one()
+    )
+
+    stmt = (
+        base.order_by(NotificationEvent.created_at.desc()).limit(limit).offset(offset)
+    )
+
+    # .tuples() gives mypy a predictable tuple type for unpacking
+    rows_raw = db.execute(stmt).tuples().all()
+
+    rows: list[NotificationRow] = []
+    for ev, title, author in rows_raw:
+        rows.append(NotificationRow(event=ev, title=title, author=author))
+
+    return total, rows
+
+
+def mark_read(db: Session, *, user_id: str, notification_id: str) -> bool:
+    """Mark a single notification as read (idempotent)."""
+    ev = db.get(NotificationEvent, notification_id)
+    if ev is None or ev.user_id != user_id:
+        return False
+
+    if ev.read_at is None:
+        ev.read_at = utcnow()
+        db.add(ev)
+        db.commit()
+
+    return True
+
+
+def mark_all_read(db: Session, *, user_id: str) -> int:
+    now = utcnow()
+    stmt = (
+        update(NotificationEvent)
+        .where(
+            NotificationEvent.user_id == user_id, NotificationEvent.read_at.is_(None)
+        )
+        .values(read_at=now)
+    )
+    res = cast(CursorResult[Any], db.execute(stmt))
+    db.commit()
+    return int(res.rowcount or 0)
 </file>
 
 <file path="services/api/app/db/session.py">
@@ -3033,6 +2834,56 @@ class Library(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
 </file>
 
+<file path="services/api/app/models/notification_event.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from app.models.base import Base
+from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class NotificationEvent(Base):
+    __tablename__ = "notification_events"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    shelf_item_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("shelf_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    format: Mapped[str] = mapped_column(String(20), nullable=False)
+    old_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    new_status: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    deep_link: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+    )
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+</file>
+
 <file path="services/api/app/providers/types.py">
 from __future__ import annotations
 
@@ -3168,7 +3019,7 @@ class JobStatusOut(BaseModel):
     exc_info: str | None
 </file>
 
-<file path="services/api/app/schemas/settings.py">
+<file path="services/api/app/schemas/notifications.py">
 from __future__ import annotations
 
 from datetime import datetime
@@ -3176,23 +3027,34 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class NotificationOut(BaseModel):
+    id: str
+    created_at: datetime
+    read_at: datetime | None
+
+    shelf_item_id: str
+    title: str
+    author: str | None
+
+    format: str
+    old_status: str
+    new_status: str
+    deep_link: str | None
 
 
-
-class UserSettingsOut(BaseModel):
-    library_system: str | None
-    preferred_formats: list[str]
-    notifications_enabled: bool
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
+class PageOut(BaseModel):
+    limit: int
+    offset: int
+    total: int
 
 
-class SettingsPatchIn(BaseModel):
-    library_system: str | None = None
-    preferred_formats: list[str] | None = None
-    notifications_enabled: bool | None = None
+class NotificationListOut(BaseModel):
+    page: PageOut
+    items: list[NotificationOut]
+
+
+class UnreadCountOut(BaseModel):
+    unread: int
 </file>
 
 <file path="services/api/app/services/catalog/factory.py">
@@ -4116,6 +3978,171 @@ def test_health_check(client):
     assert response.json() == {"ok": True}
 </file>
 
+<file path="services/api/tests/test_notifications.py">
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from app.crud.availability import upsert_snapshots
+from app.models import (
+    AvailabilitySnapshot,
+    CatalogItem,
+    CatalogMatch,
+    ShelfItem,
+    User,
+    UserSettings,
+)
+from app.models.notification_event import NotificationEvent
+from app.providers.types import AvailabilityResult
+from app.services.catalog.types import AvailabilityStatus, Format, ProviderAvailability
+from sqlalchemy import select
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _seed_user_item_match_and_hold_snapshot(
+    db_session,
+    *,
+    email: str,
+    notifications_enabled: bool,
+) -> tuple[User, ShelfItem, CatalogItem]:
+    user = User(email=email, password_hash="x")
+    db_session.add(user)
+    db_session.flush()
+
+    settings = UserSettings(
+        user_id=user.id, notifications_enabled=notifications_enabled
+    )
+    db_session.add(settings)
+
+    shelf_item = ShelfItem(
+        user_id=user.id,
+        title="Example Title",
+        author="Example Author",
+        normalized_title="example title",
+        normalized_author="example author",
+    )
+    db_session.add(shelf_item)
+    db_session.flush()
+
+    catalog_item = CatalogItem(
+        id="c1",
+        provider="fixture",
+        provider_item_id="p1",
+        title="Example Title",
+        author="Example Author",
+        raw={},
+    )
+    db_session.add(catalog_item)
+    db_session.flush()
+
+    match = CatalogMatch(
+        user_id=user.id,
+        shelf_item_id=shelf_item.id,
+        catalog_item_id=catalog_item.id,
+        provider="fixture",
+        method="fixture",
+        confidence=1.0,
+        evidence={},
+    )
+    db_session.add(match)
+
+    hold_snapshot = AvailabilitySnapshot(
+        user_id=user.id,
+        catalog_item_id=catalog_item.id,
+        format=Format.ebook.value,
+        status=AvailabilityStatus.hold.value,
+        copies_available=None,
+        copies_total=None,
+        holds=1,
+        deep_link=None,
+        last_checked_at=utcnow(),
+    )
+    db_session.add(hold_snapshot)
+
+    db_session.commit()
+    return user, shelf_item, catalog_item
+
+
+def test_notification_created_on_hold_to_available(db_session):
+    user, shelf_item, catalog_item = _seed_user_item_match_and_hold_snapshot(
+        db_session,
+        email="a@example.com",
+        notifications_enabled=True,
+    )
+
+    availability = ProviderAvailability(
+        provider="fixture",
+        provider_item_id="p1",
+        format=Format.ebook,
+        status=AvailabilityStatus.available,
+        copies_available=1,
+        copies_total=1,
+        holds=0,
+        deep_link=None,
+    )
+
+    created = upsert_snapshots(
+        db_session,
+        user_id=user.id,
+        results=[
+            AvailabilityResult(
+                catalog_item_id=catalog_item.id, availability=availability
+            )
+        ],
+    )
+    db_session.commit()
+
+    assert len(created) == 1
+    assert created[0].shelf_item_id == shelf_item.id
+    assert created[0].format == Format.ebook.value
+
+    events = db_session.execute(select(NotificationEvent)).scalars().all()
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.user_id == user.id
+    assert ev.shelf_item_id == shelf_item.id
+    assert ev.format == Format.ebook.value
+    assert ev.old_status == AvailabilityStatus.hold.value
+    assert ev.new_status == AvailabilityStatus.available.value
+
+
+def test_notifications_respect_user_setting(db_session):
+    user, shelf_item, catalog_item = _seed_user_item_match_and_hold_snapshot(
+        db_session,
+        email="b@example.com",
+        notifications_enabled=False,
+    )
+
+    availability = ProviderAvailability(
+        provider="fixture",
+        provider_item_id="p1",
+        format=Format.ebook,
+        status=AvailabilityStatus.available,
+        copies_available=1,
+        copies_total=1,
+        holds=0,
+        deep_link=None,
+    )
+
+    created = upsert_snapshots(
+        db_session,
+        user_id=user.id,
+        results=[
+            AvailabilityResult(
+                catalog_item_id=catalog_item.id, availability=availability
+            )
+        ],
+    )
+    db_session.commit()
+
+    assert created == []
+    events = db_session.execute(select(NotificationEvent)).scalars().all()
+    assert events == []
+</file>
+
 <file path="services/api/tests/test_read_next_scoring.py">
 from app.services.read_next_scoring import compute_read_next
 
@@ -4404,204 +4431,38 @@ indent_size = 4
 
 </file>
 
-<file path="apps/web/src/app/books/[id]/page.tsx">
-import Link from "next/link";
+<file path="apps/web/src/app/api/proxy/sse/route.ts">
+import { NextRequest } from "next/server";
 
-import { apiFetch } from "@/lib/api";
-import { compareReadNext, readNextTooltip, type ReadNext } from "@/lib/readNext";
+export const runtime = "nodejs";
 
-type Availability = {
-  format: string;
-  status: "available" | "hold" | "not_owned";
-  copies_available: number | null;
-  copies_total: number | null;
-  holds: number | null;
-  deep_link: string | null;
-  last_checked_at: string;
-};
+export async function GET(req: NextRequest) {
+  const path = req.nextUrl.searchParams.get("path");
+  if (!path) {
+    return new Response("Missing path", { status: 400 });
+  }
 
-type CatalogItem = {
-  id: string;
-  provider: string;
-  provider_item_id: string;
-  title: string;
-  author: string | null;
-  isbn10: string | null;
-  isbn13: string | null;
-  asin: string | null;
-};
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  const targetUrl = new URL(path, apiBase);
 
-type Match = {
-  method: string;
-  confidence: number;
-  evidence: Record<string, unknown>;
-  catalog_item: CatalogItem;
-} | null;
+  const res = await fetch(targetUrl, {
+    method: "GET",
+    headers: {
+      // forward cookies for auth
+      cookie: req.headers.get("cookie") || "",
+      accept: "text/event-stream",
+    },
+    cache: "no-store",
+  });
 
-type BookDetail = {
-  shelf_item: {
-    id: string;
-    title: string;
-    author: string;
-    isbn10: string | null;
-    isbn13: string | null;
-    asin: string | null;
-    shelf: string | null;
-    needs_fuzzy_match: boolean;
-    created_at: string;
-  };
-  source: {
-    source_type: string | null;
-    source_ref: string | null;
-    last_synced_at: string | null;
-    last_sync_status: string | null;
-    last_sync_error: string | null;
-  };
-  match: Match;
-  availability: Availability[];
-  settings: {
-    library_system: string | null;
-    preferred_formats: string[];
-    updated_at: string;
-  };
-  read_next: ReadNext;
-};
-
-type DashboardRow = {
-  shelf_item_id: string;
-  title: string;
-  author: string | null;
-  read_next: ReadNext;
-};
-
-type DashboardResponse = {
-  items: DashboardRow[];
-  page: { total: number; limit: number; offset: number };
-};
-
-export default async function BookDetailPage({ params }: { params: { id: string } }) {
-  const data = await apiFetch<BookDetail>(`/v1/books/${params.id}`);
-
-  // Compute rank by fetching the dashboard list.
-  // If your library size grows, consider a dedicated rank endpoint or server-side caching.
-  const dash = await apiFetch<DashboardResponse>(`/v1/dashboard?limit=500&offset=0&sort=read_next`);
-  const ranked = [...dash.items].sort(compareReadNext);
-  const idx = ranked.findIndex((r) => r.shelf_item_id === params.id);
-  const rank = idx >= 0 ? idx + 1 : null;
-
-  const rnTooltip = readNextTooltip(data.read_next);
-
-  return (
-    <main className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <Link href="/dashboard" className="text-sm text-blue-600 hover:underline">
-            ← Back to dashboard
-          </Link>
-          <h1 className="text-2xl font-semibold mt-2">{data.shelf_item.title}</h1>
-          <p className="text-gray-600">{data.shelf_item.author}</p>
-          {data.shelf_item.shelf ? (
-            <p className="text-xs text-gray-500 mt-1">Shelf: {data.shelf_item.shelf}</p>
-          ) : null}
-        </div>
-      </div>
-
-      <section className="mt-6 rounded border p-4">
-        <h2 className="font-semibold">Read Next</h2>
-        <p className="text-sm text-gray-600 mt-1">
-          {rank ? (
-            <span>
-              When sorting by Read Next, this item is ranked <span className="font-medium">#{rank}</span>.
-            </span>
-          ) : (
-            <span>Rank unavailable (not found in the dashboard list).</span>
-          )}
-        </p>
-
-        <div className="mt-3 text-sm">
-          <div>
-            <span className="font-medium">Tier:</span> {data.read_next.tier.replace("_", " ")}
-          </div>
-          <div className="mt-1">
-            <span className="font-medium">Score:</span> {data.read_next.score.toFixed(1)}
-          </div>
-          {data.read_next.best_format ? (
-            <div className="mt-1">
-              <span className="font-medium">Best format:</span> {data.read_next.best_format}
-            </div>
-          ) : null}
-
-          <div className="mt-3">
-            <div className="font-medium">Why it ranks here</div>
-            <ul className="list-disc pl-5 mt-2 text-gray-700">
-              {data.read_next.reasons.map((r, i) => (
-                <li key={i}>{r}</li>
-              ))}
-            </ul>
-            <div className="text-xs text-gray-500 mt-3 whitespace-pre-line" title={rnTooltip}>
-              Tip: hover for the full scoring summary.
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="mt-6 rounded border p-4">
-        <h2 className="font-semibold">Availability</h2>
-        {data.availability.length ? (
-          <ul className="mt-2 space-y-2">
-            {data.availability.map((a) => (
-              <li key={a.format} className="text-sm">
-                <div className="flex items-center justify-between">
-                  <div className="capitalize">
-                    {a.format}: {a.status.replace("_", " ")}
-                  </div>
-                  {a.deep_link ? (
-                    <a
-                      href={a.deep_link}
-                      className="text-blue-600 hover:underline"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open
-                    </a>
-                  ) : null}
-                </div>
-                <div className="text-xs text-gray-600 mt-1">
-                  {a.status === "available" && a.copies_available != null ? (
-                    <span>{a.copies_available} available</span>
-                  ) : null}
-                  {a.status === "hold" && a.holds != null ? <span>{a.holds} holds</span> : null}
-                  {a.last_checked_at ? <span className="ml-2">Checked: {new Date(a.last_checked_at).toLocaleString()}</span> : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-gray-600 mt-2">No availability data yet.</p>
-        )}
-      </section>
-
-      <section className="mt-6 rounded border p-4">
-        <h2 className="font-semibold">Match</h2>
-        {data.match ? (
-          <div className="text-sm mt-2">
-            <div>
-              <span className="font-medium">Method:</span> {data.match.method} ({Math.round(data.match.confidence * 100)}%)
-            </div>
-            <div className="mt-2">
-              <span className="font-medium">Catalog title:</span> {data.match.catalog_item.title}
-            </div>
-            <div className="text-xs text-gray-600 mt-2">
-              Evidence:
-              <pre className="mt-1 p-2 bg-gray-50 rounded overflow-auto">{JSON.stringify(data.match.evidence, null, 2)}</pre>
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-gray-600 mt-2">No match found.</p>
-        )}
-      </section>
-    </main>
-  );
+  return new Response(res.body, {
+    status: res.status,
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
 }
 </file>
 
@@ -5860,6 +5721,57 @@ def health_check():
     return {"ok": True}
 </file>
 
+<file path="services/api/app/api/routes/settings.py">
+from __future__ import annotations
+
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.models.user_settings import UserSettings
+from app.schemas.settings import SettingsPatchIn, UserSettingsOut
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+router = APIRouter(prefix="/v1", tags=["settings"])
+
+
+@router.get("/settings", response_model=UserSettingsOut)
+def get_settings(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    s = db.get(UserSettings, user.id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Settings not found")
+    return s
+
+
+@router.patch("/settings", response_model=UserSettingsOut)
+def patch_settings(
+    payload: SettingsPatchIn,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    s = db.get(UserSettings, user.id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    if payload.library_system is not None:
+        s.library_system = payload.library_system
+
+    if payload.preferred_formats is not None:
+        # Normalize + de-dupe, keep stable order ebook->audiobook
+        want = []
+        for fmt in ["ebook", "audiobook"]:
+            if fmt in payload.preferred_formats:
+                want.append(fmt)
+        s.preferred_formats = want
+
+    if payload.notifications_enabled is not None:
+        s.notifications_enabled = payload.notifications_enabled
+
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+</file>
+
 <file path="services/api/app/api/routes/shelf_items.py">
 from __future__ import annotations
 
@@ -6135,150 +6047,6 @@ def get_redis() -> Redis | None:
     except Exception as exc:
         logger.warning("Redis unavailable; caching/rate limiting disabled: %s", exc)
         return None
-</file>
-
-<file path="services/api/app/crud/availability.py">
-from __future__ import annotations
-
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Iterable
-from uuid import uuid4
-
-from app.models.availability_snapshot import AvailabilitySnapshot
-from app.models.catalog_match import CatalogMatch
-from app.models.notification_event import NotificationEvent
-from app.models.user_settings import UserSettings
-from app.providers.types import AvailabilityResult
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-@dataclass(frozen=True)
-class NotificationCreated:
-    id: str
-    shelf_item_id: str
-    title: str
-    format: str
-
-
-def upsert_snapshots(
-    db: Session, *, user_id: str, results: Iterable[AvailabilityResult]
-) -> list[NotificationCreated]:
-    """Persist availability snapshots and create notifications when items become available.
-
-    Notes:
-    - Notification creation is durable (DB insert).
-    - Real-time delivery (Redis/SSE) is best-effort and happens after commit.
-    """
-
-    # Read settings once per chunk
-    s = db.get(UserSettings, user_id)
-    notifications_on = bool(getattr(s, "notifications_enabled", True)) if s else True
-
-    results_list = list(results)
-    if not results_list:
-        return []
-
-    # Map catalog_item_id -> shelf_item_id for this user
-    catalog_ids = {r.catalog_item_id for r in results_list}
-    match_rows = (
-        db.execute(
-            select(CatalogMatch.catalog_item_id, CatalogMatch.shelf_item_id)
-            .where(
-                CatalogMatch.user_id == user_id,
-                CatalogMatch.catalog_item_id.in_(list(catalog_ids)),
-            )
-        )
-        .all()
-    )
-    catalog_to_shelf = {cid: sid for cid, sid in match_rows}
-
-    # Preload existing snapshots for quick compare
-    existing_rows = (
-        db.execute(
-            select(AvailabilitySnapshot)
-            .where(
-                AvailabilitySnapshot.user_id == user_id,
-                AvailabilitySnapshot.catalog_item_id.in_(list(catalog_ids)),
-            )
-        )
-        .scalars()
-        .all()
-    )
-    existing_by_key: dict[tuple[str, str], AvailabilitySnapshot] = {
-        (row.catalog_item_id, row.format): row for row in existing_rows
-    }
-
-    created: list[NotificationCreated] = []
-    now = utcnow()
-
-    for r in results_list:
-        a = r.availability
-        key = (r.catalog_item_id, a.format.value)
-
-        prev = existing_by_key.get(key)
-        old_status = prev.status if prev is not None else "unknown"
-        new_status = a.status.value
-
-        # Upsert snapshot
-        if prev is not None:
-            prev.status = new_status
-            prev.copies_available = a.copies_available
-            prev.copies_total = a.copies_total
-            prev.holds = a.holds
-            prev.deep_link = a.deep_link
-            prev.last_checked_at = now
-        else:
-            row = AvailabilitySnapshot(
-                id=str(uuid4()),
-                user_id=user_id,
-                catalog_item_id=r.catalog_item_id,
-                format=a.format.value,
-                status=new_status,
-                copies_available=a.copies_available,
-                copies_total=a.copies_total,
-                holds=a.holds,
-                deep_link=a.deep_link,
-                last_checked_at=now,
-            )
-            db.add(row)
-            existing_by_key[key] = row
-
-        # Emit notification on transition -> available
-        if (
-            notifications_on
-            and old_status in {"hold", "not_owned"}
-            and new_status == "available"
-        ):
-            shelf_item_id = catalog_to_shelf.get(r.catalog_item_id)
-            if shelf_item_id:
-                ev = NotificationEvent(
-                    id=str(uuid4()),
-                    user_id=user_id,
-                    shelf_item_id=shelf_item_id,
-                    format=a.format.value,
-                    old_status=old_status,
-                    new_status=new_status,
-                    deep_link=a.deep_link,
-                    created_at=now,
-                )
-                db.add(ev)
-
-                created.append(
-                    NotificationCreated(
-                        id=ev.id,
-                        shelf_item_id=shelf_item_id,
-                        title="",  # hydrated later (optional)
-                        format=a.format.value,
-                    )
-                )
-
-    return created
 </file>
 
 <file path="services/api/app/crud/shelf_items.py">
@@ -6630,7 +6398,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.models.base import Base
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -6642,19 +6410,31 @@ class UserSettings(Base):
     __tablename__ = "user_settings"
 
     user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
     )
 
-    # Selected library system identifier (later phases can formalize this)
     library_system: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    # Example: ["ebook", "audiobook"]
     preferred_formats: Mapped[list[str]] = mapped_column(
-        JSON, default=list, nullable=False
+        JSON,
+        default=list,
+        nullable=False,
+    )
+
+    # NEW: per-user notifications toggle
+    notifications_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        nullable=False,
     )
 
     user = relationship("User", back_populates="settings")
@@ -6885,6 +6665,30 @@ class DashboardOut(BaseModel):
     items: list[DashboardRowOut]
 </file>
 
+<file path="services/api/app/schemas/settings.py">
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel
+
+
+class UserSettingsOut(BaseModel):
+    library_system: str | None
+    preferred_formats: list[str]
+    notifications_enabled: bool
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SettingsPatchIn(BaseModel):
+    library_system: str | None = None
+    preferred_formats: list[str] | None = None
+    notifications_enabled: bool | None = None
+</file>
+
 <file path="services/api/app/schemas/sync_run.py">
 from __future__ import annotations
 
@@ -7102,100 +6906,107 @@ def run_async(coro: Awaitable[T]) -> T:
             asyncio.set_event_loop(None)
 </file>
 
-<file path="services/api/app/workers/events.py">
+<file path="services/api/tests/conftest.py">
 from __future__ import annotations
 
-import json
-from datetime import datetime
-from typing import Any
-
-from app.core.config import settings
-from app.core.redis import get_redis
-
-
-def publish_sync_event(
-    *, user_id: str, run_id: str, type_: str, payload: dict[str, Any]
-):
-    r = get_redis(settings.redis_url)
-    channel = f"sync:{user_id}:{run_id}"
-    body = {
-        "type": type_,
-        "payload": payload,
-        "ts": datetime.utcnow().isoformat() + "Z",
-    }
-    r.publish(channel, json.dumps(body))
-
-
-def publish_notification_event(*, user_id: str, payload: dict[str, Any]) -> None:
-    r = get_redis(settings.redis_url)
-    channel = f"notify:{user_id}"
-    body = {
-        "type": "notification",
-        "payload": payload,
-        "ts": datetime.utcnow().isoformat() + "Z",
-    }
-    r.publish(channel, json.dumps(body))
-</file>
-
-<file path="services/api/tests/conftest.py">
 import os
+from pathlib import Path
+from typing import Generator
 
 import pytest
-from app.db.session import get_db
-from app.main import app
-from app.models import Base
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+
+
+def _guess_test_database_url() -> str:
+    """Prefer TEST_DATABASE_URL; fall back to DATABASE_URL; if Postgres, append _test."""
+    test_url = os.getenv("TEST_DATABASE_URL")
+    if test_url:
+        return test_url
+
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return "sqlite+pysqlite:///:memory:"
+
+    if db_url.endswith("_test") or "shelfsync_test" in db_url:
+        return db_url
+
+    if db_url.startswith("postgresql") and "/" in db_url.rsplit("@", 1)[-1]:
+        prefix, dbname = db_url.rsplit("/", 1)
+        if dbname:
+            return f"{prefix}/{dbname}_test"
+
+    return db_url
+
+
+_TEST_DB_URL = _guess_test_database_url()
+os.environ.setdefault("DATABASE_URL", _TEST_DB_URL)
+
+
+def _alembic_cfg(db_url: str) -> Config:
+    base_dir = Path(__file__).resolve().parents[1]  # services/api
+    alembic_ini = base_dir / "alembic.ini"
+    cfg = Config(str(alembic_ini))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    return cfg
 
 
 @pytest.fixture(scope="session")
 def engine():
-    # Prefer a dedicated Postgres DB for realism.
-    # Override at runtime: DATABASE_URL=... pytest
-    url = os.getenv("DATABASE_URL")
-    if url:
-        eng = create_engine(url, pool_pre_ping=True)
-    else:
-        # Default to in-memory SQLite so tests run without external services.
+    url = _TEST_DB_URL
+
+    if url.startswith("sqlite"):
+        from sqlalchemy.pool import StaticPool
+
         eng = create_engine(
-            "sqlite+pysqlite:///:memory:",
+            url,
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
+    else:
+        eng = create_engine(url, pool_pre_ping=True)
 
-    # For speed, create tables directly in tests.
-    # In CI, consider running `alembic upgrade head` and omitting create_all.
-    Base.metadata.create_all(bind=eng)
+    command.upgrade(_alembic_cfg(url), "head")
+
     yield eng
-    Base.metadata.drop_all(bind=eng)
+    eng.dispose()
 
 
 @pytest.fixture()
-def db_session(engine):
+def db_session(engine) -> Generator[Session, None, None]:
     connection = engine.connect()
-    tx = connection.begin()
+    transaction = connection.begin()
 
-    TestingSessionLocal = sessionmaker(
-        autocommit=False, autoflush=False, bind=connection
-    )
-    session = TestingSessionLocal()
+    TestingSessionLocal = sessionmaker(bind=connection, autoflush=False, autocommit=False)
+    session: Session = TestingSessionLocal()
+
+    session.begin_nested()
+
+    @event.listens_for(session, "after_transaction_end")
+    def _restart_savepoint(sess: Session, trans) -> None:  # type: ignore[no-redef]
+        if trans.nested and not trans._parent.nested:  # pyright: ignore[reportPrivateUsage]
+            sess.begin_nested()
 
     try:
         yield session
     finally:
         session.close()
-        tx.rollback()
+        transaction.rollback()
         connection.close()
 
 
 @pytest.fixture()
-def client(db_session):
-    def override_get_db():
+def client(db_session: Session) -> Generator[TestClient, None, None]:
+    from app.db.session import get_db
+    from app.main import app
+
+    def _override_get_db() -> Generator[Session, None, None]:
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_db] = _override_get_db
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -7379,18 +7190,6 @@ def test_start_sync_run_creates_run_and_enqueues_job(client, monkeypatch):
     assert called["id"] == body["id"]
 </file>
 
-<file path="services/api/requirements-dev.txt">
-black==24.8.0
-isort==5.13.2
-mypy==1.11.2
-pytest==8.3.2
-pytest-asyncio==0.24.0
-pytest-cov==5.0.0
-ruff==0.6.2
-types-python-jose
-APScheduler==3.11.2
-</file>
-
 <file path=".gitignore">
 # Python
 __pycache__/
@@ -7415,13 +7214,19 @@ out/
 </file>
 
 <file path="Makefile">
-.PHONY: infra-up infra-down api-test web-check dev api-alembic
+.PHONY: infra-up infra-down infra-up-full infra-down-full api-test web-check dev api-alembic
 
 infra-up:
 	docker compose -f infra/docker-compose.yml up -d
 
 infra-down:
 	docker compose -f infra/docker-compose.yml down
+
+infra-up-full:
+	docker compose -f infra/docker-compose.full.yml up -d --build
+
+infra-down-full:
+	docker compose -f infra/docker-compose.full.yml down
 
 api-test:
 	cd services/api && . .venv/bin/activate && black . && isort . && pytest
@@ -7433,7 +7238,277 @@ dev:
 	./scripts/dev.sh
 
 api-alembic:
-	cd services/api && ./bin/alembic $(ARGS)
+	cd services/api && ./bin/alembic
+</file>
+
+<file path="apps/web/src/app/books/[id]/page.tsx">
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+
+import { AuthGuard } from "@/components/AuthGuard";
+import { apiFetch } from "@/lib/api";
+import { compareReadNext, readNextTooltip, type ReadNext } from "@/lib/readNext";
+
+type Availability = {
+  format: string;
+  status: "available" | "hold" | "not_owned";
+  copies_available: number | null;
+  copies_total: number | null;
+  holds: number | null;
+  deep_link: string | null;
+  last_checked_at: string;
+};
+
+type CatalogItem = {
+  id: string;
+  provider: string;
+  provider_item_id: string;
+  title: string;
+  author: string | null;
+  isbn10: string | null;
+  isbn13: string | null;
+  asin: string | null;
+};
+
+type Match = {
+  method: string;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  catalog_item: CatalogItem;
+} | null;
+
+type BookDetail = {
+  shelf_item: {
+    id: string;
+    title: string;
+    author: string;
+    isbn10: string | null;
+    isbn13: string | null;
+    asin: string | null;
+    shelf: string | null;
+    needs_fuzzy_match: boolean;
+    created_at: string;
+  };
+  source: {
+    source_type: string | null;
+    source_ref: string | null;
+    last_synced_at: string | null;
+    last_sync_status: string | null;
+    last_sync_error: string | null;
+  };
+  match: Match;
+  availability: Availability[];
+  settings: {
+    library_system: string | null;
+    preferred_formats: string[];
+    updated_at: string;
+  };
+  read_next: ReadNext;
+};
+
+type DashboardRow = {
+  shelf_item_id: string;
+  title: string;
+  author: string | null;
+  read_next: ReadNext;
+};
+
+type DashboardResponse = {
+  items: DashboardRow[];
+  page: { total: number; limit: number; offset: number };
+};
+
+export default function BookDetailPage({ params }: { params: { id: string } }) {
+  return (
+    <AuthGuard>
+      <BookDetailInner id={params.id} />
+    </AuthGuard>
+  );
+}
+
+function BookDetailInner({ id }: { id: string }) {
+  const [data, setData] = useState<BookDetail | null>(null);
+  const [rank, setRank] = useState<number | null>(null);
+  const [rankLoading, setRankLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    setData(null);
+    setRank(null);
+    setError(null);
+
+    (async () => {
+      try {
+        const book = await apiFetch<BookDetail>(`/v1/books/${id}`);
+        if (!alive) return;
+        setData(book);
+      } catch (e) {
+        if (!alive) return;
+        setError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+
+      setRankLoading(true);
+      try {
+        const dash = await apiFetch<DashboardResponse>(`/v1/dashboard?limit=500&offset=0&sort=read_next`);
+        if (!alive) return;
+        const ranked = [...dash.items].sort(compareReadNext);
+        const idx = ranked.findIndex((r) => r.shelf_item_id === id);
+        setRank(idx >= 0 ? idx + 1 : null);
+      } catch {
+        if (!alive) return;
+        setRank(null);
+      } finally {
+        if (alive) setRankLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  const rnTooltip = useMemo(() => (data ? readNextTooltip(data.read_next) : ""), [data]);
+
+  if (error) {
+    return (
+      <main className="p-6 max-w-4xl mx-auto">
+        <Link href="/dashboard" className="text-sm text-blue-600 hover:underline">
+          ← Back to dashboard
+        </Link>
+
+        <div className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm">
+          <div className="font-medium">Couldn’t load this book.</div>
+          <div className="mt-1 text-gray-700">{error}</div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!data) {
+    return (
+      <main className="p-6 max-w-4xl mx-auto">
+        <Link href="/dashboard" className="text-sm text-blue-600 hover:underline">
+          ← Back to dashboard
+        </Link>
+
+        <div className="mt-4 rounded border p-4 text-sm text-gray-600">Loading…</div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="p-6 max-w-4xl mx-auto">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <Link href="/dashboard" className="text-sm text-blue-600 hover:underline">
+            ← Back to dashboard
+          </Link>
+          <h1 className="text-2xl font-semibold mt-2">{data.shelf_item.title}</h1>
+          <p className="text-gray-600">{data.shelf_item.author}</p>
+          {data.shelf_item.shelf ? <p className="text-xs text-gray-500 mt-1">Shelf: {data.shelf_item.shelf}</p> : null}
+        </div>
+      </div>
+
+      <section className="mt-6 rounded border p-4">
+        <h2 className="font-semibold">Read Next</h2>
+        <p className="text-sm text-gray-600 mt-1">
+          {rankLoading ? (
+            <span>Calculating rank…</span>
+          ) : rank ? (
+            <span>
+              When sorting by Read Next, this item is ranked <span className="font-medium">#{rank}</span>.
+            </span>
+          ) : (
+            <span>Rank unavailable (not found in the dashboard list).</span>
+          )}
+        </p>
+
+        <div className="mt-3 text-sm">
+          <div>
+            <span className="font-medium">Tier:</span> {data.read_next.tier.replace("_", " ")}
+          </div>
+          <div className="mt-1">
+            <span className="font-medium">Score:</span> {data.read_next.score.toFixed(1)}
+          </div>
+          {data.read_next.best_format ? (
+            <div className="mt-1">
+              <span className="font-medium">Best format:</span> {data.read_next.best_format}
+            </div>
+          ) : null}
+
+          <div className="mt-3">
+            <div className="font-medium">Why it ranks here</div>
+            <ul className="list-disc pl-5 mt-2 text-gray-700">
+              {data.read_next.reasons.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+            <div className="text-xs text-gray-500 mt-3 whitespace-pre-line" title={rnTooltip}>
+              Tip: hover for the full scoring summary.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-6 rounded border p-4">
+        <h2 className="font-semibold">Availability</h2>
+        {data.availability.length ? (
+          <ul className="mt-2 space-y-2">
+            {data.availability.map((a) => (
+              <li key={a.format} className="text-sm">
+                <div className="flex items-center justify-between">
+                  <div className="capitalize">
+                    {a.format}: {a.status.replace("_", " ")}
+                  </div>
+                  {a.deep_link ? (
+                    <a href={a.deep_link} className="text-blue-600 hover:underline" target="_blank" rel="noreferrer">
+                      Open
+                    </a>
+                  ) : null}
+                </div>
+                <div className="text-xs text-gray-600 mt-1">
+                  {a.status === "available" && a.copies_available != null ? <span>{a.copies_available} available</span> : null}
+                  {a.status === "hold" && a.holds != null ? <span>{a.holds} holds</span> : null}
+                  {a.last_checked_at ? <span className="ml-2">Checked: {new Date(a.last_checked_at).toLocaleString()}</span> : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-gray-600 mt-2">No availability data yet.</p>
+        )}
+      </section>
+
+      <section className="mt-6 rounded border p-4">
+        <h2 className="font-semibold">Catalog match</h2>
+        {data.match ? (
+          <div className="mt-2 text-sm">
+            <div>
+              <span className="font-medium">Provider:</span> {data.match.catalog_item.provider}
+            </div>
+            <div className="mt-1">
+              <span className="font-medium">Confidence:</span> {(data.match.confidence * 100).toFixed(0)}%
+            </div>
+            <div className="mt-2">
+              <span className="font-medium">Catalog title:</span> {data.match.catalog_item.title}
+            </div>
+            <div className="text-xs text-gray-600 mt-2">
+              Evidence:
+              <pre className="mt-1 p-2 bg-gray-50 rounded overflow-auto">{JSON.stringify(data.match.evidence, null, 2)}</pre>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-600 mt-2">No match found.</p>
+        )}
+      </section>
+    </main>
+  );
+}
 </file>
 
 <file path="apps/web/tsconfig.json">
@@ -8178,6 +8253,145 @@ def decode_access_token(token: str) -> dict:
     )
 </file>
 
+<file path="services/api/app/crud/availability.py">
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Iterable
+from uuid import uuid4
+
+from app.models.availability_snapshot import AvailabilitySnapshot
+from app.models.catalog_match import CatalogMatch
+from app.models.notification_event import NotificationEvent
+from app.models.user_settings import UserSettings
+from app.providers.types import AvailabilityResult
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True)
+class NotificationCreated:
+    id: str
+    shelf_item_id: str
+    title: str
+    format: str
+
+
+def upsert_snapshots(
+    db: Session, *, user_id: str, results: Iterable[AvailabilityResult]
+) -> list[NotificationCreated]:
+    """Persist availability snapshots and create notifications when items become available.
+
+    Notes:
+    - Notification creation is durable (DB insert).
+    - Real-time delivery (Redis/SSE) is best-effort and happens after commit.
+    """
+
+    # Read settings once per chunk
+    s = db.get(UserSettings, user_id)
+    notifications_on = bool(getattr(s, "notifications_enabled", True)) if s else True
+
+    results_list = list(results)
+    if not results_list:
+        return []
+
+    # Map catalog_item_id -> shelf_item_id for this user
+    catalog_ids = {r.catalog_item_id for r in results_list}
+    match_rows = db.execute(
+        select(CatalogMatch.catalog_item_id, CatalogMatch.shelf_item_id).where(
+            CatalogMatch.user_id == user_id,
+            CatalogMatch.catalog_item_id.in_(list(catalog_ids)),
+        )
+    ).all()
+    catalog_to_shelf = {cid: sid for cid, sid in match_rows}
+
+    # Preload existing snapshots for quick compare
+    existing_rows = (
+        db.execute(
+            select(AvailabilitySnapshot).where(
+                AvailabilitySnapshot.user_id == user_id,
+                AvailabilitySnapshot.catalog_item_id.in_(list(catalog_ids)),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing_by_key: dict[tuple[str, str], AvailabilitySnapshot] = {
+        (row.catalog_item_id, row.format): row for row in existing_rows
+    }
+
+    created: list[NotificationCreated] = []
+    now = utcnow()
+
+    for r in results_list:
+        a = r.availability
+        key = (r.catalog_item_id, a.format.value)
+
+        prev = existing_by_key.get(key)
+        old_status = prev.status if prev is not None else "unknown"
+        new_status = a.status.value
+
+        # Upsert snapshot
+        if prev is not None:
+            prev.status = new_status
+            prev.copies_available = a.copies_available
+            prev.copies_total = a.copies_total
+            prev.holds = a.holds
+            prev.deep_link = a.deep_link
+            prev.last_checked_at = now
+        else:
+            row = AvailabilitySnapshot(
+                id=str(uuid4()),
+                user_id=user_id,
+                catalog_item_id=r.catalog_item_id,
+                format=a.format.value,
+                status=new_status,
+                copies_available=a.copies_available,
+                copies_total=a.copies_total,
+                holds=a.holds,
+                deep_link=a.deep_link,
+                last_checked_at=now,
+            )
+            db.add(row)
+            existing_by_key[key] = row
+
+        # Emit notification on transition -> available
+        if (
+            notifications_on
+            and old_status in {"hold", "not_owned"}
+            and new_status == "available"
+        ):
+            shelf_item_id = catalog_to_shelf.get(r.catalog_item_id)
+            if shelf_item_id:
+                ev = NotificationEvent(
+                    id=str(uuid4()),
+                    user_id=user_id,
+                    shelf_item_id=shelf_item_id,
+                    format=a.format.value,
+                    old_status=old_status,
+                    new_status=new_status,
+                    deep_link=a.deep_link,
+                    created_at=now,
+                )
+                db.add(ev)
+
+                created.append(
+                    NotificationCreated(
+                        id=ev.id,
+                        shelf_item_id=shelf_item_id,
+                        title="",  # hydrated later (optional)
+                        format=a.format.value,
+                    )
+                )
+
+    return created
+</file>
+
 <file path="services/api/app/ingestion/csv_import.py">
 from __future__ import annotations
 
@@ -8401,35 +8615,6 @@ def parse_goodreads_rss(xml_text: str) -> list[dict]:
         )
 
     return out
-</file>
-
-<file path="services/api/app/models/__init__.py">
-from app.models.availability_snapshot import AvailabilitySnapshot
-from app.models.base import Base
-from app.models.catalog_item import CatalogItem
-from app.models.catalog_match import CatalogMatch
-from app.models.library import Library
-from app.models.shelf_item import ShelfItem
-from app.models.shelf_source import ShelfSource
-from app.models.sync_run import SyncRun
-from app.models.user import User
-from app.models.user_settings import UserSettings
-from app.models.notification_event import NotificationEvent
-
-
-__all__ = [
-    "Base",
-    "User",
-    "UserSettings",
-    "ShelfSource",
-    "ShelfItem",
-    "Library",
-    "CatalogItem",
-    "CatalogMatch",
-    "AvailabilitySnapshot",
-    "SyncRun",
-    "NotificationEvent",
-]
 </file>
 
 <file path="services/api/app/models/availability_snapshot.py">
@@ -8911,6 +9096,41 @@ def upsert_shelf_items(
     )
 </file>
 
+<file path="services/api/app/workers/events.py">
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Any
+
+from app.core.config import settings
+from app.core.redis import get_redis
+
+
+def publish_sync_event(
+    *, user_id: str, run_id: str, type_: str, payload: dict[str, Any]
+):
+    r = get_redis(settings.redis_url)
+    channel = f"sync:{user_id}:{run_id}"
+    body = {
+        "type": type_,
+        "payload": payload,
+        "ts": datetime.utcnow().isoformat() + "Z",
+    }
+    r.publish(channel, json.dumps(body))
+
+
+def publish_notification_event(*, user_id: str, payload: dict[str, Any]) -> None:
+    r = get_redis(settings.redis_url)
+    channel = f"notify:{user_id}"
+    body = {
+        "type": "notification",
+        "payload": payload,
+        "ts": datetime.utcnow().isoformat() + "Z",
+    }
+    r.publish(channel, json.dumps(body))
+</file>
+
 <file path="services/api/.env.example">
 ENV=local
 API_NAME=ShelfSyncAPI
@@ -8944,204 +9164,44 @@ RATE_LIMIT_DASHBOARD_PER_WINDOW=30
 RATE_LIMIT_BOOKS_PER_WINDOW=60
 </file>
 
-<file path="apps/web/src/app/dashboard/page.tsx">
-import Link from "next/link";
+<file path="services/api/requirements-dev.txt">
+black==24.8.0
+isort==5.13.2
+mypy==1.11.2
+pytest==8.3.2
+pytest-asyncio==0.24.0
+pytest-cov==5.0.0
+ruff==0.6.2
+types-python-jose
+APScheduler==3.11.2
+</file>
 
-import { NotificationBell } from "@/components/NotificationBell";
-import { apiFetch } from "@/lib/api";
-import { compareReadNext, readNextTooltip, type ReadNext } from "@/lib/readNext";
+<file path="services/api/app/models/__init__.py">
+from app.models.availability_snapshot import AvailabilitySnapshot
+from app.models.base import Base
+from app.models.catalog_item import CatalogItem
+from app.models.catalog_match import CatalogMatch
+from app.models.library import Library
+from app.models.notification_event import NotificationEvent
+from app.models.shelf_item import ShelfItem
+from app.models.shelf_source import ShelfSource
+from app.models.sync_run import SyncRun
+from app.models.user import User
+from app.models.user_settings import UserSettings
 
-
-type MatchMini = {
-  catalog_item_id: string;
-  provider: string;
-  provider_item_id: string;
-  method: string;
-  confidence: number;
-};
-
-type Availability = {
-  format: string;
-  status: "available" | "hold" | "not_owned";
-  copies_available: number | null;
-  copies_total: number | null;
-  holds: number | null;
-  deep_link: string | null;
-  last_checked_at: string;
-};
-
-type DashboardRow = {
-  shelf_item_id: string;
-  title: string;
-  author: string | null;
-  shelf: string | null;
-  needs_fuzzy_match: boolean;
-  match: MatchMini | null;
-  availability: Availability[];
-  read_next: ReadNext;
-};
-
-type DashboardResponse = {
-  settings: {
-    library_system: string | null;
-    preferred_formats: string[];
-    updated_at: string;
-  };
-  last_sync: {
-    source_type: string | null;
-    source_id: string | null;
-    last_synced_at: string | null;
-    last_sync_status: string | null;
-    last_sync_error: string | null;
-  };
-  page: {
-    limit: number;
-    offset: number;
-    total: number;
-  };
-  items: DashboardRow[];
-};
-
-type SortKey = "read_next" | "availability" | "title";
-
-type FilterKey = "all" | "available" | "hold" | "not_owned";
-
-function availabilityStatus(row: DashboardRow): FilterKey {
-  if (!row.match) return "not_owned";
-  if (row.availability.some((a) => a.status === "available")) return "available";
-  if (row.availability.some((a) => a.status === "hold")) return "hold";
-  return "not_owned";
-}
-
-function availabilityRank(row: DashboardRow): number {
-  const s = availabilityStatus(row);
-  if (s === "available") return 3;
-  if (s === "hold") return 2;
-  if (s === "not_owned") return 1;
-  return 0;
-}
-
-export default async function DashboardPage() {
-  const data = await apiFetch<DashboardResponse>(`/v1/dashboard?limit=200&offset=0&sort=read_next`);
-
-  // Default sort is Read Next
-  const defaultSort: SortKey = "read_next";
-  const defaultFilter: FilterKey = "all";
-
-  const rows = [...data.items];
-
-  const sorted = rows.sort((a, b) => {
-    if (defaultSort === "read_next") return compareReadNext(a, b);
-    if (defaultSort === "availability") {
-      const ra = availabilityRank(a);
-      const rb = availabilityRank(b);
-      if (ra !== rb) return rb - ra;
-      return a.title.localeCompare(b.title);
-    }
-    return a.title.localeCompare(b.title);
-  });
-
-  const filtered = sorted.filter((r) => {
-    if (defaultFilter === "all") return true;
-    return availabilityStatus(r) === defaultFilter;
-  });
-
-  return (
-    <main className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Dashboard</h1>
-          <p className="text-sm text-gray-600">
-            Sorted by <span className="font-medium">Read Next</span>. This ranking prioritizes
-            items available now, then shorter hold queues, using your format preferences.
-          </p>
-          <p className="text-xs text-gray-500 mt-1">
-            Tip: hover ⓘ to see the explanation (tier, format, queue details).
-          </p>
-        </div>
-        <NotificationBell />
-        <Link href="/settings" className="px-3 py-2 rounded border text-sm hover:bg-gray-50">
-          Settings
-        </Link>
-      </div>
-
-      <div className="mt-4 rounded border overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-gray-700">
-            <tr>
-              <th className="text-left p-3">Title</th>
-              <th className="text-left p-3">Shelf</th>
-              <th className="text-left p-3">Availability</th>
-              <th className="text-left p-3">Read Next</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((row) => {
-              const status = availabilityStatus(row);
-              const rnTitle = readNextTooltip(row.read_next);
-              return (
-                <tr key={row.shelf_item_id} className="border-t">
-                  <td className="p-3">
-                    <div className="flex items-center gap-2">
-                      <Link href={`/books/${row.shelf_item_id}`} className="font-medium hover:underline">
-                        {row.title}
-                      </Link>
-                      <span
-                        className="text-xs text-gray-500 cursor-help"
-                        title={rnTitle}
-                        aria-label="Read Next explanation"
-                      >
-                        ⓘ
-                      </span>
-                    </div>
-                    {row.author ? <div className="text-gray-600">{row.author}</div> : null}
-                    {row.needs_fuzzy_match ? (
-                      <div className="text-xs text-amber-700 mt-1">Needs fuzzy match</div>
-                    ) : null}
-                  </td>
-                  <td className="p-3">{row.shelf ?? "—"}</td>
-                  <td className="p-3">
-                    <div className="capitalize">{status.replace("_", " ")}</div>
-                    {row.availability.length ? (
-                      <div className="text-xs text-gray-600 mt-1">
-                        {row.availability
-                          .map((a) => {
-                            const bits = [a.format, a.status];
-                            if (a.status === "available" && a.copies_available != null) {
-                              bits.push(`${a.copies_available} available`);
-                            }
-                            if (a.status === "hold" && a.holds != null) {
-                              bits.push(`${a.holds} holds`);
-                            }
-                            return bits.join(" • ");
-                          })
-                          .join(" | ")}
-                      </div>
-                    ) : null}
-                  </td>
-                  <td className="p-3">
-                    <div className="capitalize">{row.read_next.tier.replace("_", " ")}</div>
-                    <div className="text-xs text-gray-600 mt-1">Score: {row.read_next.score.toFixed(1)}</div>
-                    {row.read_next.best_format ? (
-                      <div className="text-xs text-gray-600">Best: {row.read_next.best_format}</div>
-                    ) : null}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="mt-6 text-xs text-gray-600">
-        <p>
-          <span className="font-medium">How Read Next works:</span> Available now → Holds → Not owned.
-          Within a tier, your preferred format order matters, and hold queue size breaks ties.
-        </p>
-      </div>
-    </main>
-  );
-}
+__all__ = [
+    "Base",
+    "User",
+    "UserSettings",
+    "ShelfSource",
+    "ShelfItem",
+    "Library",
+    "CatalogItem",
+    "CatalogMatch",
+    "AvailabilitySnapshot",
+    "SyncRun",
+    "NotificationEvent",
+]
 </file>
 
 <file path="services/api/app/models/shelf_item.py">
@@ -9288,262 +9348,6 @@ class ShelfSource(Base):
     )
 </file>
 
-<file path="services/api/app/workers/jobs.py">
-from __future__ import annotations
-
-import asyncio
-import inspect
-import logging
-from datetime import datetime, timezone
-
-from app.crud.availability import upsert_snapshots
-from app.crud.shelf_items import list_shelf_items_for_user
-from app.crud.sync_runs import (
-    get_sync_run,
-    set_sync_run_failed,
-    set_sync_run_running,
-    set_sync_run_succeeded,
-    update_progress,
-)
-from app.db.session import SessionLocal
-from app.models.shelf_source import ShelfSource
-from app.providers.factory import get_provider
-from app.services.catalog.factory import get_provider as get_catalog_provider
-from app.services.goodreads_rss import fetch_rss, parse_goodreads_rss
-from app.services.matching.matcher import match_shelf_item
-from app.services.matching.persist import upsert_catalog_item, upsert_match
-from app.services.shelf_import import upsert_shelf_items
-from app.workers.async_utils import run_async
-from app.workers.events import publish_sync_event
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-
-from app.models.shelf_item import ShelfItem
-from app.workers.events import publish_notification_event
-
-logger = logging.getLogger(__name__)
-
-
-def availability_refresh_job(sync_run_id: str) -> None:
-    db: Session = SessionLocal()
-    run = None
-    try:
-        run = get_sync_run(db, run_id=sync_run_id)
-        if run is None:
-            raise RuntimeError("sync run not found")
-
-        items = list_shelf_items_for_user(db, user_id=run.user_id)
-        total = len(items)
-
-        set_sync_run_running(db, run=run, total=total)
-
-        provider = get_provider(db, run.user_id)
-
-        processed = 0
-        batch_size = 50
-
-        for i in range(0, total, batch_size):
-            chunk = items[i : i + batch_size]
-            results = provider.availability_bulk(chunk)
-
-            upsert_snapshots(db, user_id=run.user_id, results=results)
-            processed += len(chunk)
-
-
-            created = upsert_snapshots(db, user_id=run.user_id, results=results)
-            processed += len(chunk)
-
-            update_progress(db, run=run, current=processed)  # typically commits
-
-            if created:
-                # Hydrate titles for nicer live notifications
-                ids = [c.shelf_item_id for c in created]
-                items = (
-                    db.execute(select(ShelfItem.id, ShelfItem.title).where(ShelfItem.id.in_(ids)))
-                    .all()
-                )
-                id_to_title = {sid: title for sid, title in items}
-
-                for c in created:
-                    publish_notification_event(
-                        user_id=run.user_id,
-                        payload={
-                            "id": c.id,
-                            "shelf_item_id": c.shelf_item_id,
-                            "title": id_to_title.get(c.shelf_item_id, ""),
-                            "format": c.format,
-                        },
-                    )
-            publish_sync_event(
-                user_id=run.user_id,
-                run_id=run.id,
-                type_="availability_progress",
-                payload={"current": processed, "total": total},
-            )
-
-        set_sync_run_succeeded(db, run=run)
-        publish_sync_event(
-            user_id=run.user_id, run_id=run.id, type_="availability_done", payload={}
-        )
-
-    except Exception as e:
-        logger.exception("availability_refresh_job failed")
-        try:
-            if run is None:
-                run = get_sync_run(db, run_id=sync_run_id)
-            if run is not None:
-                set_sync_run_failed(db, run=run, message=str(e))
-                publish_sync_event(
-                    user_id=run.user_id,
-                    run_id=run.id,
-                    type_="availability_failed",
-                    payload={"error": str(e)},
-                )
-        except Exception:
-            logger.exception("failed to mark sync run as failed")
-        raise
-    finally:
-        db.close()
-
-
-def refresh_matching_for_user(user_id: str) -> dict:
-    """Refresh catalog matching for all of a user's shelf items.
-
-    Returns a small dict that RQ can store as the job result.
-    """
-    db: Session = SessionLocal()
-    try:
-        provider = get_catalog_provider()
-        items = list_shelf_items_for_user(db, user_id=user_id)
-
-        processed = 0
-        matched = 0
-
-        for item in items:
-            processed += 1
-            res = run_async(match_shelf_item(provider, item))
-            if res is None:
-                continue
-
-            catalog_item = upsert_catalog_item(db, res.book)
-            db.flush()  # ensure catalog_item.id is available
-
-            upsert_match(
-                db,
-                user_id=user_id,
-                shelf_item_id=item.id,
-                catalog_item_id=catalog_item.id,
-                provider=catalog_item.provider,
-                method=res.method,
-                confidence=res.confidence,
-                evidence=res.evidence,
-            )
-
-            item.needs_fuzzy_match = False
-            matched += 1
-
-            if processed % 50 == 0:
-                db.commit()
-
-        db.commit()
-        return {"processed": processed, "matched": matched}
-    except Exception:
-        db.rollback()
-        logger.exception("refresh_matching_for_user failed", extra={"user_id": user_id})
-        raise
-    finally:
-        db.close()
-
-
-def sync_goodreads_rss(source_id: str) -> None:
-    """Fetch + parse Goodreads RSS and upsert shelf items for a ShelfSource."""
-    db: Session = SessionLocal()
-    try:
-        source = db.get(ShelfSource, source_id)
-        if source is None:
-            logger.warning("shelf_source_not_found", extra={"source_id": source_id})
-            return
-
-        # Mark as running (best effort)
-        if hasattr(source, "last_sync_status"):
-            setattr(source, "last_sync_status", "running")
-        if hasattr(source, "last_sync_started_at"):
-            setattr(source, "last_sync_started_at", datetime.now(timezone.utc))
-        db.commit()
-
-        # Fetch RSS - fetch_rss is async in our service, but we run inside sync worker.
-        rss_coro_or_text = fetch_rss(getattr(source, "source_ref", ""))
-        if inspect.isawaitable(rss_coro_or_text):
-            xml_text = asyncio.run(rss_coro_or_text)
-        else:
-            xml_text = rss_coro_or_text  # type: ignore[assignment]
-
-        items = parse_goodreads_rss(
-            xml_text, default_shelf=getattr(source, "default_shelf", None)
-        )
-        payload_items = [
-            {
-                "external_id": it.external_id,
-                "title": it.title,
-                "author": it.author,
-                "isbn10": it.isbn10,
-                "isbn13": it.isbn13,
-                "asin": it.asin,
-                "shelf": it.shelf,
-            }
-            for it in items
-        ]
-
-        summary = upsert_shelf_items(
-            db,
-            user_id=str(getattr(source, "user_id")),
-            source=source,
-            items=payload_items,
-        )
-
-        # Mark ok
-        if hasattr(source, "last_sync_status"):
-            setattr(source, "last_sync_status", "ok")
-        if hasattr(source, "last_synced_at"):
-            setattr(source, "last_synced_at", datetime.now(timezone.utc))
-        if hasattr(source, "last_sync_error"):
-            setattr(source, "last_sync_error", None)
-        db.commit()
-
-        logger.info(
-            "goodreads_rss_synced",
-            extra={
-                "source_id": source_id,
-                "user_id": str(getattr(source, "user_id")),
-                "created": getattr(summary, "created", None),
-                "updated": getattr(summary, "updated", None),
-                "errors": len(getattr(summary, "errors", []) or []),
-            },
-        )
-
-    except Exception as e:
-        logger.exception(
-            "goodreads_rss_sync_failed", extra={"source_id": source_id, "error": str(e)}
-        )
-
-        try:
-            source = db.get(ShelfSource, source_id)
-            if source is not None:
-                if hasattr(source, "last_sync_status"):
-                    setattr(source, "last_sync_status", "error")
-                if hasattr(source, "last_sync_error"):
-                    setattr(source, "last_sync_error", str(e))
-                db.commit()
-        except Exception:
-            logger.exception(
-                "goodreads_rss_sync_failed_marking_error",
-                extra={"source_id": source_id},
-            )
-        raise
-    finally:
-        db.close()
-</file>
-
 <file path="services/api/app/workers/queue.py">
 from __future__ import annotations
 
@@ -9647,41 +9451,6 @@ def test_login_auto_creates_demo_user_with_simple_password(client):
     assert resp.json()["email"] == "demo@example.com"
 </file>
 
-<file path="services/api/requirements.txt">
-fastapi
-uvicorn[standard]
-httpx
-requests
-beautifulsoup4
-selectolax
-playwright
-selenium
-python-dotenv
-pydantic
-
-sqlalchemy
-alembic
-psycopg2-binary
-redis
-rq
-celery
-apscheduler
-passlib[bcrypt]
-bcrypt<4
-
-opentelemetry-api
-opentelemetry-sdk
-opentelemetry-instrumentation-fastapi
-opentelemetry-instrumentation-httpx
-opentelemetry-exporter-otlp
-
-python-jose[cryptography]
-pydantic-settings
-email-validator
-python-multipart
-APScheduler==3.11.2
-</file>
-
 <file path="pyproject.toml">
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -9781,111 +9550,603 @@ make api-alembic ARGS="revision --autogenerate -m 'phase1 init schema'"
 ```
 </file>
 
+<file path="apps/web/src/app/dashboard/page.tsx">
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+
+import { AuthGuard } from "@/components/AuthGuard";
+import { NotificationBell } from "@/components/NotificationBell";
+import { apiFetch } from "@/lib/api";
+import { compareReadNext, readNextTooltip, type ReadNext } from "@/lib/readNext";
+
+type MatchMini = {
+  catalog_item_id: string;
+  provider: string;
+  provider_item_id: string;
+  method: string;
+  confidence: number;
+};
+
+type Availability = {
+  format: string;
+  status: "available" | "hold" | "not_owned";
+  copies_available: number | null;
+  copies_total: number | null;
+  holds: number | null;
+  deep_link: string | null;
+  last_checked_at: string;
+};
+
+type DashboardRow = {
+  shelf_item_id: string;
+  title: string;
+  author: string | null;
+  shelf: string | null;
+  needs_fuzzy_match: boolean;
+  match: MatchMini | null;
+  availability: Availability[];
+  read_next: ReadNext;
+};
+
+type DashboardResponse = {
+  settings: {
+    library_system: string | null;
+    preferred_formats: string[];
+    updated_at: string;
+  };
+  last_sync: {
+    source_type: string | null;
+    source_id: string | null;
+    last_synced_at: string | null;
+    last_sync_status: string | null;
+    last_sync_error: string | null;
+  };
+  page: {
+    limit: number;
+    offset: number;
+    total: number;
+  };
+  items: DashboardRow[];
+};
+
+type SortKey = "read_next" | "availability" | "title";
+type FilterKey = "all" | "available" | "hold" | "not_owned";
+
+const DEFAULT_SORT: SortKey = "read_next";
+const DEFAULT_FILTER: FilterKey = "all";
+
+function availabilityStatus(row: DashboardRow): FilterKey {
+  if (!row.match) return "not_owned";
+  if (row.availability.some((a) => a.status === "available")) return "available";
+  if (row.availability.some((a) => a.status === "hold")) return "hold";
+  return "not_owned";
+}
+
+function availabilityRank(row: DashboardRow): number {
+  const s = availabilityStatus(row);
+  if (s === "available") return 3;
+  if (s === "hold") return 2;
+  if (s === "not_owned") return 1;
+  return 0;
+}
+
+export default function DashboardPage() {
+  return (
+    <AuthGuard>
+      <DashboardInner />
+    </AuthGuard>
+  );
+}
+
+function DashboardInner() {
+  const [data, setData] = useState<DashboardResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        const res = await apiFetch<DashboardResponse>(`/v1/dashboard?limit=200&offset=0&sort=read_next`);
+        if (!alive) return;
+        setData(res);
+      } catch (e) {
+        if (!alive) return;
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!data) return [];
+
+    const rows = [...data.items];
+
+    const sorted = rows.sort((a, b) => {
+      if (DEFAULT_SORT === "read_next") return compareReadNext(a, b);
+      if (DEFAULT_SORT === "availability") {
+        const ra = availabilityRank(a);
+        const rb = availabilityRank(b);
+        if (ra !== rb) return rb - ra;
+        return a.title.localeCompare(b.title);
+      }
+      return a.title.localeCompare(b.title);
+    });
+
+    return sorted.filter((r) => {
+      if (DEFAULT_FILTER === "all") return true;
+      return availabilityStatus(r) === DEFAULT_FILTER;
+    });
+  }, [data]);
+
+  return (
+    <main className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+          <p className="text-sm text-gray-600">
+            Sorted by <span className="font-medium">Read Next</span>. This ranking prioritizes items available now, then
+            shorter hold queues, using your format preferences.
+          </p>
+          <p className="text-xs text-gray-500 mt-1">Tip: hover ⓘ to see the explanation (tier, format, queue details).</p>
+        </div>
+
+        <NotificationBell />
+
+        <Link href="/settings" className="px-3 py-2 rounded border text-sm hover:bg-gray-50">
+          Settings
+        </Link>
+      </div>
+
+      {error ? (
+        <div className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm">
+          <div className="font-medium">Couldn’t load your dashboard.</div>
+          <div className="mt-1 text-gray-700">{error}</div>
+        </div>
+      ) : null}
+
+      {!data && !error ? <div className="mt-4 rounded border p-4 text-sm text-gray-600">Loading…</div> : null}
+
+      {data ? (
+        <div className="mt-4 rounded border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-gray-700">
+              <tr>
+                <th className="text-left p-3">Title</th>
+                <th className="text-left p-3">Shelf</th>
+                <th className="text-left p-3">Availability</th>
+                <th className="text-left p-3">Read Next</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((row) => {
+                const status = availabilityStatus(row);
+                const rnTitle = readNextTooltip(row.read_next);
+                return (
+                  <tr key={row.shelf_item_id} className="border-t">
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        <Link href={`/books/${row.shelf_item_id}`} className="font-medium hover:underline">
+                          {row.title}
+                        </Link>
+                        <span className="text-xs text-gray-500 cursor-help" title={rnTitle} aria-label="Read Next explanation">
+                          ⓘ
+                        </span>
+                      </div>
+                      {row.author ? <div className="text-gray-600">{row.author}</div> : null}
+                      {row.needs_fuzzy_match ? <div className="text-xs text-amber-700 mt-1">Needs fuzzy match</div> : null}
+                    </td>
+
+                    <td className="p-3">{row.shelf ?? "—"}</td>
+
+                    <td className="p-3">
+                      <div className="capitalize">{status.replace("_", " ")}</div>
+                      {row.availability.length ? (
+                        <div className="text-xs text-gray-600 mt-1">
+                          {row.availability
+                            .map((a) => {
+                              const bits = [a.format, a.status];
+                              if (a.status === "available" && a.copies_available != null) bits.push(`${a.copies_available} available`);
+                              if (a.status === "hold" && a.holds != null) bits.push(`${a.holds} holds`);
+                              return bits.join(" • ");
+                            })
+                            .join(" | ")}
+                        </div>
+                      ) : null}
+                    </td>
+
+                    <td className="p-3">
+                      <div className="capitalize">{row.read_next.tier.replace("_", " ")}</div>
+                      <div className="text-xs text-gray-600 mt-1">Score: {row.read_next.score.toFixed(1)}</div>
+                      {row.read_next.best_format ? <div className="text-xs text-gray-600">Best: {row.read_next.best_format}</div> : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      <div className="mt-6 text-xs text-gray-600">
+        <p>
+          <span className="font-medium">How Read Next works:</span> Available now → Holds → Not owned. Within a tier, your
+          preferred format order matters, and hold queue size breaks ties.
+        </p>
+      </div>
+    </main>
+  );
+}
+</file>
+
 <file path="services/api/app/core/config.py">
 from __future__ import annotations
 
-from typing import Literal
+import json
+from pathlib import Path
+from typing import Annotated, Any
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+# services/api/app/core/config.py -> BASE_DIR == services/api
+BASE_DIR = Path(__file__).resolve().parents[2]
+APP_DIR = BASE_DIR / "app"
+DEFAULT_FIXTURE_CATALOG_PATH = APP_DIR / "fixtures" / "catalog_fixture.json"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=str(BASE_DIR / ".env"),
+        extra="ignore",
+        env_prefix="",
+        case_sensitive=False,
     )
 
-    env: str = Field(default="local", validation_alias="ENV")
-    api_name: str = Field(default="ShelfSync API", validation_alias="API_NAME")
+    # Environment
+    env: str = Field(default="dev", validation_alias="ENV")
 
+    # Application
+    api_name: str = Field(default="shelfsync-api", validation_alias="API_NAME")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+
+    # Database & cache
     database_url: str = Field(
-        default="sqlite:///./app.db", validation_alias="DATABASE_URL"
+        default="sqlite+pysqlite:///./shelfsync.db",
+        validation_alias="DATABASE_URL",
     )
-    redis_url: str = Field(
-        default="redis://localhost:6379/0", validation_alias="REDIS_URL"
-    )
+    test_database_url: str | None = Field(default=None, validation_alias="TEST_DATABASE_URL")
+    redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="REDIS_URL")
 
-    cors_origins: list[str] = Field(
+    # Auth
+    auth_secret_key: str = Field(default="dev-secret-key", validation_alias="AUTH_SECRET_KEY")
+    auth_cookie_name: str = Field(default="shelfsync_auth", validation_alias="AUTH_COOKIE_NAME")
+    auth_cookie_samesite: str = Field(default="lax", validation_alias="AUTH_COOKIE_SAMESITE")
+    auth_cookie_secure: bool = Field(default=False, validation_alias="AUTH_COOKIE_SECURE")
+
+    # Demo mode
+    demo_seed_email: str = Field(default="demo@shelfsync.app", validation_alias="DEMO_SEED_EMAIL")
+    demo_seed_password: str = Field(default="demo", validation_alias="DEMO_SEED_PASSWORD")
+    demo_login_enabled: bool = Field(default=False, validation_alias="DEMO_LOGIN_ENABLED")
+
+    # CORS
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"],
         validation_alias="CORS_ORIGINS",
     )
 
-    auth_secret_key: str = Field(
-        default="dev-secret", validation_alias="AUTH_SECRET_KEY"
-    )
-    auth_algorithm: str = Field(default="HS256", validation_alias="AUTH_ALGORITHM")
-    auth_access_token_ttl_minutes: int = Field(
-        default=60 * 24 * 7, validation_alias="AUTH_ACCESS_TOKEN_TTL_MINUTES"
-    )
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> list[str]:
+        """
+        Supported env formats:
+          - JSON list: '["http://localhost:3000"]'
+          - Bracket list (no quotes): '[http://localhost:3000, http://localhost:5173]'
+          - Comma-separated: 'http://localhost:3000, http://localhost:5173'
+          - '*' wildcard
+        """
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if not isinstance(v, str):
+            raise TypeError("cors_origins must be a string or list of strings")
 
-    auth_cookie_name: str = Field(
-        default="shelfsync_token", validation_alias="AUTH_COOKIE_NAME"
-    )
-    auth_cookie_secure: bool = Field(
-        default=False, validation_alias="AUTH_COOKIE_SECURE"
-    )
-    auth_cookie_samesite: Literal["lax", "strict", "none"] = Field(
-        default="lax", validation_alias="AUTH_COOKIE_SAMESITE"
-    )
+        s = v.strip()
+        if not s:
+            return []
+        if s == "*":
+            return ["*"]
 
-    demo_login_enabled: bool = Field(
-        default=False, validation_alias="DEMO_LOGIN_ENABLED"
-    )
-    demo_seed_enabled: bool = Field(default=False, validation_alias="DEMO_SEED_ENABLED")
+        # Try JSON first for strings that look like JSON arrays
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
+            except json.JSONDecodeError:
+                # Not JSON, treat as a simple bracket list without quotes
+                inner = s[1:-1].strip()
+                if not inner:
+                    return []
+                parts = [p.strip().strip('"').strip("'") for p in inner.split(",")]
+                return [p for p in parts if p]
 
-    goodreads_base_url: str = Field(
-        default="https://www.goodreads.com", validation_alias="GOODREADS_BASE_URL"
-    )
-    goodreads_fetch_timeout_secs: int = Field(
-        default=15, validation_alias="GOODREADS_FETCH_TIMEOUT_SECS"
-    )
-    user_agent: str = Field(default="ShelfSync/0.1", validation_alias="USER_AGENT")
+        # Comma-separated list
+        parts = [p.strip() for p in s.split(",")]
+        return [p for p in parts if p]
 
-    catalog_provider: str = Field(
-        default="fixture", validation_alias="CATALOG_PROVIDER"
-    )
+    # Catalog provider
+    catalog_provider: str = Field(default="fixture", validation_alias="CATALOG_PROVIDER")
     fixture_catalog_path: str = Field(
-        default="app/fixtures/catalog_fixture.json",
+        default=str(DEFAULT_FIXTURE_CATALOG_PATH),
         validation_alias="FIXTURE_CATALOG_PATH",
     )
+    google_books_api_key: str | None = Field(default=None, validation_alias="GOOGLE_BOOKS_API_KEY")
 
-    availability_cache_ttl_secs: int = Field(
-        default=300, validation_alias="AVAILABILITY_CACHE_TTL_SECS"
-    )
+    # Rate limiting
+    rate_limit_window_seconds: int = Field(default=60, validation_alias="RATE_LIMIT_WINDOW_SECONDS")
+    rate_limit_books_per_window: int = Field(default=30, validation_alias="RATE_LIMIT_BOOKS_PER_WINDOW")
+    rate_limit_dashboard_per_window: int = Field(default=10, validation_alias="RATE_LIMIT_DASHBOARD_PER_WINDOW")
 
-    rate_limit_window_secs: int = Field(
-        default=60, validation_alias="RATE_LIMIT_WINDOW_SECS"
-    )
-    rate_limit_books_per_window: int = Field(
-        default=120, validation_alias="RATE_LIMIT_BOOKS_PER_WINDOW"
-    )
-    rate_limit_dashboard_per_window: int = Field(
-        default=60, validation_alias="RATE_LIMIT_DASHBOARD_PER_WINDOW"
-    )
+    # Workers
+    worker_job_timeout_secs: int = Field(default=30, validation_alias="WORKER_JOB_TIMEOUT_SECS")
 
-    worker_job_timeout_secs: int = Field(
-        default=600, validation_alias="WORKER_JOB_TIMEOUT_SECS"
-    )
-
+    # OpenTelemetry
     otel_enabled: bool = Field(default=False, validation_alias="OTEL_ENABLED")
-    otel_otlp_endpoint: str | None = Field(
-        default=None, validation_alias="OTEL_OTLP_ENDPOINT"
+    otel_otlp_endpoint: str = Field(
+        default="http://localhost:4317",
+        validation_alias="OTEL_OTLP_ENDPOINT",
     )
 
 
 settings = Settings()
 </file>
 
+<file path="services/api/app/workers/jobs.py">
+from __future__ import annotations
+
+import asyncio
+import inspect
+import logging
+from datetime import datetime, timezone
+
+from app.crud.availability import upsert_snapshots
+from app.crud.shelf_items import list_shelf_items_for_user
+from app.crud.sync_runs import (
+    get_sync_run,
+    set_sync_run_failed,
+    set_sync_run_running,
+    set_sync_run_succeeded,
+    update_progress,
+)
+from app.db.session import SessionLocal
+from app.models.shelf_item import ShelfItem
+from app.providers.base import ProviderBase
+from app.providers.goodreads import GoodreadsProvider
+from app.providers.libby import LibbyProvider
+from app.providers.overdrive import OverdriveProvider
+from app.providers.scribd import ScribdProvider
+from app.providers.storygraph import StoryGraphProvider
+from app.workers.publish import publish_notification_event, publish_sync_event
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def get_provider(db: Session, user_id: str) -> ProviderBase:
+    # The provider selection is expected to be stored in the user's record,
+    # but for now we infer it from any existing shelf items.
+    items = list_shelf_items_for_user(db, user_id=user_id)
+    if not items:
+        # Default provider when nothing exists yet
+        return GoodreadsProvider(db, user_id)
+
+    # Heuristic: pick provider by inspecting the first item
+    first = items[0]
+    source = getattr(first, "source", None)
+    if source == "goodreads":
+        return GoodreadsProvider(db, user_id)
+    if source == "storygraph":
+        return StoryGraphProvider(db, user_id)
+    if source == "libby":
+        return LibbyProvider(db, user_id)
+    if source == "overdrive":
+        return OverdriveProvider(db, user_id)
+    if source == "scribd":
+        return ScribdProvider(db, user_id)
+
+    return GoodreadsProvider(db, user_id)
+
+
+def availability_refresh_job(sync_run_id: str) -> None:
+    db: Session = SessionLocal()
+    run = None
+    try:
+        run = get_sync_run(db, run_id=sync_run_id)
+        if run is None:
+            raise RuntimeError("sync run not found")
+
+        items = list_shelf_items_for_user(db, user_id=run.user_id)
+        total = len(items)
+
+        set_sync_run_running(db, run=run, total=total)
+
+        provider = get_provider(db, run.user_id)
+
+        processed = 0
+        batch_size = 50
+
+        for i in range(0, total, batch_size):
+            chunk = items[i : i + batch_size]
+            results = provider.availability_bulk(chunk)
+
+            created = upsert_snapshots(db, user_id=run.user_id, results=results)
+            processed += len(chunk)
+
+            update_progress(db, run=run, current=processed)  # typically commits
+
+            if created:
+                # Hydrate titles for nicer live notifications
+                ids = [c.shelf_item_id for c in created]
+                rows = db.execute(
+                    select(ShelfItem.id, ShelfItem.title).where(ShelfItem.id.in_(ids))
+                ).tuples().all()
+                id_to_title: dict[str, str] = {sid: title for sid, title in rows}
+
+                for c in created:
+                    publish_notification_event(
+                        user_id=run.user_id,
+                        payload={
+                            "id": c.id,
+                            "shelf_item_id": c.shelf_item_id,
+                            "title": id_to_title.get(c.shelf_item_id, ""),
+                            "format": c.format,
+                        },
+                    )
+            publish_sync_event(
+                user_id=run.user_id,
+                run_id=run.id,
+                type_="availability_progress",
+                payload={"current": processed, "total": total},
+            )
+
+        set_sync_run_succeeded(db, run=run)
+        publish_sync_event(
+            user_id=run.user_id,
+            run_id=run.id,
+            type_="availability_succeeded",
+            payload={"current": processed, "total": total},
+        )
+
+    except Exception as e:
+        logger.exception("availability_refresh_job failed")
+        try:
+            if run is not None:
+                set_sync_run_failed(db, run=run, message=str(e))
+                publish_sync_event(
+                    user_id=run.user_id,
+                    run_id=run.id,
+                    type_="availability_failed",
+                    payload={"error": str(e)},
+                )
+        except Exception:
+            logger.exception("failed to mark sync run as failed")
+        raise
+    finally:
+        db.close()
+
+
+def refresh_matching_for_user(user_id: str) -> dict:
+    """Refresh catalog matching for all of a user's shelf items.
+
+    Returns a small dict that RQ can store as the job result.
+    """
+    db: Session = SessionLocal()
+    try:
+        items = list_shelf_items_for_user(db, user_id=user_id)
+        total = len(items)
+        if total == 0:
+            return {"matched": 0, "total": 0}
+
+        provider = get_provider(db, user_id)
+
+        matched = 0
+        batch_size = 50
+
+        for i in range(0, total, batch_size):
+            chunk = items[i : i + batch_size]
+            results = provider.matching_bulk(chunk)
+            matched += len(results)
+
+            publish_sync_event(
+                user_id=user_id,
+                run_id=None,
+                type_="matching_progress",
+                payload={"current": min(i + len(chunk), total), "total": total},
+            )
+
+        publish_sync_event(
+            user_id=user_id,
+            run_id=None,
+            type_="matching_succeeded",
+            payload={"matched": matched, "total": total},
+        )
+        return {"matched": matched, "total": total}
+
+    finally:
+        db.close()
+
+
+def sync_goodreads_rss(source_id: str) -> None:
+    """Poll and sync Goodreads RSS, if applicable."""
+    db: Session = SessionLocal()
+    try:
+        provider = GoodreadsProvider(db, source_id)
+        if inspect.iscoroutinefunction(provider.sync_rss):
+            asyncio.run(provider.sync_rss())
+        else:
+            provider.sync_rss()
+    finally:
+        db.close()
+</file>
+
+<file path="services/api/requirements.txt">
+fastapi
+uvicorn[standard]
+httpx
+requests
+beautifulsoup4
+selectolax
+playwright
+selenium
+python-dotenv
+pydantic
+
+sqlalchemy
+alembic
+psycopg2-binary
+redis
+rq
+celery
+apscheduler
+passlib[bcrypt]
+bcrypt<4
+
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+opentelemetry-exporter-otlp
+
+python-jose[cryptography]
+pydantic-settings
+email-validator
+python-multipart
+APScheduler==3.11.2
+</file>
+
 <file path="services/api/app/main.py">
 from __future__ import annotations
 
 from app.api.router import api_router
+from app.api.routes.notifications import router as notifications_router
 from app.core.config import settings
 from app.core.otel import init_otel
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes.notifications import router as notifications_router
-
 
 app = FastAPI(title=settings.api_name)
 

@@ -1,4 +1,42 @@
+name: shelfsync
+
 services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: shelfsync
+      POSTGRES_PASSWORD: shelfsync
+      POSTGRES_DB: shelfsync
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shelfsync -d shelfsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  goodreads-mock:
+    image: stoplight/prism:5
+    command: ["mock", "-h", "0.0.0.0", "/spec/goodreads-mock.yaml"]
+    ports:
+      - "4010:4010"
+    volumes:
+      - ../docs/openapi/goodreads-mock.yaml:/spec/goodreads-mock.yaml:ro
+      - ../mock:/spec/mock:ro
+
   api:
     build:
       context: ../services/api
@@ -6,6 +44,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://shelfsync:shelfsync@postgres:5432/shelfsync
       REDIS_URL: redis://redis:6379/0
+      GOODREADS_BASE_URL: http://goodreads-mock:4010
     ports:
       - "8000:8000"
     depends_on:
@@ -13,3 +52,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      goodreads-mock:
+        condition: service_started
+
+volumes:
+  postgres_data:

@@ -8,7 +8,12 @@ from app.api.deps import get_current_user
 from app.api.rate_limit import rate_limiter
 from app.core.config import settings
 from app.core.redis import get_redis_async
-from app.crud.notifications import list_notifications, mark_all_read, mark_read, unread_count
+from app.crud.notifications import (
+    list_notifications,
+    mark_all_read,
+    mark_read,
+    unread_count,
+)
 from app.db.session import get_db
 from app.schemas.notifications import (
     NotificationListOut,
@@ -60,13 +65,17 @@ def get_notifications(
         for r in rows
     ]
 
-    return NotificationListOut(page=PageOut(limit=limit, offset=offset, total=total), items=items)
+    return NotificationListOut(
+        page=PageOut(limit=limit, offset=offset, total=total), items=items
+    )
 
 
 @router.get(
     "/notifications/unread-count",
     response_model=UnreadCountOut,
-    dependencies=[Depends(rate_limiter("notifications_unread", limit=240, window_seconds=60))],
+    dependencies=[
+        Depends(rate_limiter("notifications_unread", limit=240, window_seconds=60))
+    ],
 )
 def get_unread_count(
     db: Session = Depends(get_db),
@@ -78,7 +87,9 @@ def get_unread_count(
 @router.post(
     "/notifications/{notification_id}/read",
     status_code=204,
-    dependencies=[Depends(rate_limiter("notifications_mark_read", limit=240, window_seconds=60))],
+    dependencies=[
+        Depends(rate_limiter("notifications_mark_read", limit=240, window_seconds=60))
+    ],
 )
 def mark_notification_read(
     notification_id: str,
@@ -93,7 +104,9 @@ def mark_notification_read(
 
 @router.post(
     "/notifications/mark-all-read",
-    dependencies=[Depends(rate_limiter("notifications_mark_all", limit=60, window_seconds=60))],
+    dependencies=[
+        Depends(rate_limiter("notifications_mark_all", limit=60, window_seconds=60))
+    ],
 )
 def mark_all_notifications_read(
     db: Session = Depends(get_db),

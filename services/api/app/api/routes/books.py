@@ -37,7 +37,7 @@ router = APIRouter(prefix="/v1", tags=["books"])
             rate_limiter(
                 "book_detail",
                 limit=settings.rate_limit_books_per_window,
-                window_seconds=settings.rate_limit_window_secs,
+                window_seconds=settings.rate_limit_window_seconds,
             )
         )
     ],

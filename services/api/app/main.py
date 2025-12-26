@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from app.api.router import api_router
+from app.api.routes.notifications import router as notifications_router
 from app.core.config import settings
 from app.core.otel import init_otel
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes.notifications import router as notifications_router
-
 
 app = FastAPI(title=settings.api_name)
 

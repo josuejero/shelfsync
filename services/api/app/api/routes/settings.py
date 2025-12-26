@@ -38,7 +38,7 @@ def patch_settings(
             if fmt in payload.preferred_formats:
                 want.append(fmt)
         s.preferred_formats = want
-    
+
     if payload.notifications_enabled is not None:
         s.notifications_enabled = payload.notifications_enabled
 
