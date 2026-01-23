@@ -1,0 +1,1 @@
+issue_id,title,description,dataset_system,table_entity,column_field,dq_dimension,severity,business_impact,detected_by,detection_method,evidence_link_or_query,status,owner,reported_date,target_fix_date,resolved_date,root_cause_category,remediation_summary,fix_reference,verification_steps,preventive_control,notes

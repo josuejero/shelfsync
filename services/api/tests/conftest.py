@@ -7,11 +7,10 @@ from typing import Generator
 import pytest
 from alembic import command
 from alembic.config import Config
+from app.models import Base
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
-
-from app.models import Base
 
 
 def _guess_test_database_url() -> str:

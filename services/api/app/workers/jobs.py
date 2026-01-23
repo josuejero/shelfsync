@@ -46,7 +46,9 @@ def _try_publish(fn_name: str, **kwargs: Any) -> None:
             try:
                 fn(**kwargs)
             except Exception:
-                logger.exception("publish failed", extra={"fn": fn_name, "module": module_name})
+                logger.exception(
+                    "publish failed", extra={"fn": fn_name, "module": module_name}
+                )
             return
 
 
@@ -58,7 +60,11 @@ def publish_sync_event(
     *, user_id: str, run_id: str | None, type_: str, payload: dict[str, Any]
 ) -> None:
     _try_publish(
-        "publish_sync_event", user_id=user_id, run_id=run_id, type_=type_, payload=payload
+        "publish_sync_event",
+        user_id=user_id,
+        run_id=run_id,
+        type_=type_,
+        payload=payload,
     )
 
 
@@ -94,7 +100,9 @@ def availability_refresh_job(sync_run_id: str) -> None:
                 ids = [c.shelf_item_id for c in created]
                 rows = (
                     db.execute(
-                        select(ShelfItem.id, ShelfItem.title).where(ShelfItem.id.in_(ids))
+                        select(ShelfItem.id, ShelfItem.title).where(
+                            ShelfItem.id.in_(ids)
+                        )
                     )
                     .tuples()
                     .all()

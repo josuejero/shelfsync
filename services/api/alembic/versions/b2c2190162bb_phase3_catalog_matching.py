@@ -126,9 +126,7 @@ def upgrade() -> None:
             existing_nullable=True,
         )
         batch_op.drop_index(op.f("ix_shelf_items_user_normkey"))
-        batch_op.drop_constraint(
-            op.f("uq_shelf_item_user_normkey"), type_="unique"
-        )
+        batch_op.drop_constraint(op.f("uq_shelf_item_user_normkey"), type_="unique")
         batch_op.create_index(
             "ix_shelf_items_source_external_unique",
             ["shelf_source_id", "external_id"],
@@ -139,9 +137,7 @@ def upgrade() -> None:
         batch_op.drop_column("goodreads_book_id")
 
     with op.batch_alter_table("shelf_sources") as batch_op:
-        batch_op.drop_constraint(
-            op.f("uq_shelf_source_user_type_ref"), type_="unique"
-        )
+        batch_op.drop_constraint(op.f("uq_shelf_source_user_type_ref"), type_="unique")
         batch_op.drop_column("shelf_name")
         batch_op.drop_column("last_imported_at")
     # ### end Alembic commands ###
