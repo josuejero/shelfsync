@@ -8,8 +8,10 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
+
+from app.models import Base
 
 
 def _guess_test_database_url() -> str:
@@ -45,6 +47,19 @@ def _alembic_cfg(db_url: str) -> Config:
     return cfg
 
 
+def _truncate_all_tables(engine) -> None:
+    """Delete rows from every model table so tests always start clean."""
+    with engine.begin() as conn:
+        if engine.dialect.name == "sqlite":
+            conn.execute(text("PRAGMA foreign_keys = OFF"))
+
+        for table in reversed(Base.metadata.sorted_tables):
+            conn.execute(table.delete())
+
+        if engine.dialect.name == "sqlite":
+            conn.execute(text("PRAGMA foreign_keys = ON"))
+
+
 @pytest.fixture(scope="session")
 def engine():
     url = _TEST_DB_URL
@@ -74,6 +89,7 @@ def engine():
 
 @pytest.fixture()
 def db_session(engine) -> Generator[Session, None, None]:
+    _truncate_all_tables(engine)
     connection = engine.connect()
     transaction = connection.begin()
 
