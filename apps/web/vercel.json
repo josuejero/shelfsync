@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://collectables-receiving-storm-cattle.trycloudflare.com/:path*"
+    }
+  ]
+}

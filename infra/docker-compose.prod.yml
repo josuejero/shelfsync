@@ -1,0 +1,72 @@
+name: shelfsync
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shelfsync
+      POSTGRES_PASSWORD: shelfsync_change_me
+      POSTGRES_DB: shelfsync
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shelfsync -d shelfsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./services/api
+    command: sh -c "python -m alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      ENV: production
+      DATABASE_URL: postgresql+psycopg2://shelfsync:shelfsync_change_me@postgres:5432/shelfsync
+      REDIS_URL: redis://redis:6379/0
+
+      AUTH_SECRET_KEY: "j7xY5vD3oUx4zCnYXgiNM63yGkkSxjvyLyi1aKUqvdbk9We_GiCJdwMiRg1dpocD"
+      AUTH_COOKIE_SECURE: "true"
+      AUTH_COOKIE_SAMESITE: "lax"
+
+      CATALOG_PROVIDER: fixture
+      FIXTURE_CATALOG_PATH: app/fixtures/catalog_fixture.json
+
+      OTEL_ENABLED: "false"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./services/api
+    command: sh -c "rq worker -u redis://redis:6379/0"
+    environment:
+      ENV: production
+      DATABASE_URL: postgresql+psycopg2://shelfsync:shelfsync_change_me@postgres:5432/shelfsync
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET_KEY: "CHANGE_ME_LONG_RANDOM"
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+volumes:
+  postgres_data:
