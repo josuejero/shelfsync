@@ -60,7 +60,13 @@ def engine():
     else:
         eng = create_engine(url, pool_pre_ping=True)
 
-    command.upgrade(_alembic_cfg(url), "head")
+    connection = eng.connect()
+    cfg = _alembic_cfg(url)
+    cfg.attributes["connection"] = connection
+    try:
+        command.upgrade(cfg, "head")
+    finally:
+        connection.close()
 
     yield eng
     eng.dispose()

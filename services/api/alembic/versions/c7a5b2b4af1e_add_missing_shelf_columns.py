@@ -32,7 +32,7 @@ def upgrade() -> None:
             "meta",
             sa.JSON(),
             nullable=False,
-            server_default=sa.text("'{}'::json"),
+            server_default=sa.text("'{}'"),
         ),
     )
     op.add_column(
@@ -53,7 +53,7 @@ def upgrade() -> None:
             "updated_at",
             sa.DateTime(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
     )
 
