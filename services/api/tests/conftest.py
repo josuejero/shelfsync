@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Generator
 
 import pytest
-from alembic import command
+from alembic.command import upgrade
 from alembic.config import Config
 from app.models import Base
 from fastapi.testclient import TestClient
@@ -78,7 +78,7 @@ def engine():
     cfg = _alembic_cfg(url)
     cfg.attributes["connection"] = connection
     try:
-        command.upgrade(cfg, "head")
+        upgrade(cfg, "head")
     finally:
         connection.close()
 
