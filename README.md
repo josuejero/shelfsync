@@ -1,6 +1,9 @@
 
 # ShelfSync
 
+[![Live site](https://img.shields.io/website?label=Live%20site&style=flat-square&url=https%3A%2F%2Fshelfsync-six.vercel.app)](https://shelfsync-six.vercel.app)
+[![CI](https://github.com/josuejero/shelfsync/actions/workflows/ci.yml/badge.svg)](https://github.com/josuejero/shelfsync/actions/workflows/ci.yml)
+
 Sync your Goodreads shelves with your public library catalog (Libby/OverDrive-style) availability - plus “read next” recommendations and availability notifications.
 
 > Portfolio note: this repo is intentionally built to demonstrate full-stack + data/ML-adjacent + DevOps fundamentals (typed API contracts, background jobs, caching, tests, CI, security scanning, observability hooks), with a clear path to production integrations.
