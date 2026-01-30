@@ -1,136 +1,25 @@
 "use client";
 
-import { apiFetch } from "@/lib/api";
-import { useEffect, useState } from "react";
-
-type ShelfSource = {
-  id: string;
-  source_type: string;
-  provider: string;
-  source_ref: string;
-  meta: Record<string, unknown>;
-  is_active: boolean;
-  last_synced_at: string | null;
-  last_sync_status: string | null;
-  last_sync_error: string | null;
-};
-
-type ShelfItem = {
-  id: string;
-  title: string;
-  author: string;
-  isbn10: string | null;
-  isbn13: string | null;
-  asin: string | null;
-  shelf: string | null;
-  needs_fuzzy_match: boolean;
-};
-
-type ImportSummary = {
-  created: number;
-  updated: number;
-  skipped: number;
-  errors: { key: string; error: string }[];
-};
+import { useGoodreadsSync } from "./useGoodreadsSync";
 
 export default function GoodreadsSettingsPage() {
-  const [rssUrl, setRssUrl] = useState("http://localhost:4010/mock/goodreads/shelf/demo/read/rss");
-  const [shelf, setShelf] = useState("to-read");
-
-  const [rssSource, setRssSource] = useState<ShelfSource | null>(null);
-  const [items, setItems] = useState<ShelfItem[]>([]);
-  const [summary, setSummary] = useState<ImportSummary | null>(null);
-
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function refreshItems(sourceId?: string) {
-    const qs = new URLSearchParams();
-    if (sourceId) qs.set("source_id", sourceId);
-    const rows = await apiFetch<ShelfItem[]>(`/v1/shelf-items?${qs.toString()}`);
-    setItems(rows);
-  }
-
-  async function connectRss() {
-    setBusy(true);
-    setError(null);
-    setSummary(null);
-    try {
-      const src = await apiFetch<ShelfSource>("/v1/shelf-sources/rss", {
-        method: "POST",
-        body: JSON.stringify({ rss_url: rssUrl, shelf, sync_now: true }),
-      });
-      setRssSource(src);
-
-      // Let the worker run; poll once after a short delay.
-      setTimeout(() => {
-        refreshItems(src.id).catch(() => undefined);
-      }, 750);
-    } catch (e: any) {
-      setError(e?.message || String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function syncNow() {
-    if (!rssSource) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiFetch<{ job_id: string }>(`/v1/shelf-sources/${rssSource.id}/sync`, { method: "POST" });
-      setTimeout(() => {
-        refreshItems(rssSource.id).catch(() => undefined);
-      }, 750);
-    } catch (e: any) {
-      setError(e?.message || String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function disconnect() {
-    if (!rssSource) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiFetch<void>(`/v1/shelf-sources/${rssSource.id}`, { method: "DELETE" });
-      setRssSource(null);
-      setItems([]);
-    } catch (e: any) {
-      setError(e?.message || String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function uploadCsv() {
-    if (!csvFile) return;
-    setBusy(true);
-    setError(null);
-    setSummary(null);
-    try {
-      const fd = new FormData();
-      fd.append("file", csvFile);
-      const res = await apiFetch<ImportSummary>("/v1/shelf-sources/csv", {
-        method: "POST",
-        body: fd,
-      });
-      setSummary(res);
-      await refreshItems();
-    } catch (e: any) {
-      setError(e?.message || String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    // Load items on first open (works even before connecting)
-    refreshItems().catch(() => undefined);
-  }, []);
+  const {
+    state: {
+      rssUrl,
+      shelf,
+      rssSource,
+      items,
+      summary,
+      csvFile,
+      busy,
+      error,
+    },
+    setField,
+    connectRss,
+    syncNow,
+    disconnect,
+    uploadCsv,
+  } = useGoodreadsSync();
 
   return (
     <main className="min-h-screen p-8">
@@ -154,14 +43,18 @@ export default function GoodreadsSettingsPage() {
             <input
               className="w-full rounded-xl border px-3 py-2"
               value={rssUrl}
-              onChange={(e) => setRssUrl(e.target.value)}
+              onChange={(e) => setField({ rssUrl: e.target.value })}
               placeholder="https://www.goodreads.com/review/list_rss/..."
             />
           </div>
 
           <div className="space-y-2">
             <label className="block text-sm font-medium">Shelf label (stored as metadata)</label>
-            <input className="w-full rounded-xl border px-3 py-2" value={shelf} onChange={(e) => setShelf(e.target.value)} />
+            <input
+              className="w-full rounded-xl border px-3 py-2"
+              value={shelf}
+              onChange={(e) => setField({ shelf: e.target.value })}
+            />
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -216,7 +109,7 @@ export default function GoodreadsSettingsPage() {
           <input
             type="file"
             accept=".csv"
-            onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+            onChange={(e) => setField({ csvFile: e.target.files?.[0] || null })}
           />
 
           <button

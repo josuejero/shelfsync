@@ -1,83 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
 
 import { AuthGuard } from "@/components/AuthGuard";
 import { NotificationBell } from "@/components/NotificationBell";
-import { apiFetch } from "@/lib/api";
-import { compareReadNext, readNextTooltip, type ReadNext } from "@/lib/readNext";
-
-type MatchMini = {
-  catalog_item_id: string;
-  provider: string;
-  provider_item_id: string;
-  method: string;
-  confidence: number;
-};
-
-type Availability = {
-  format: string;
-  status: "available" | "hold" | "not_owned";
-  copies_available: number | null;
-  copies_total: number | null;
-  holds: number | null;
-  deep_link: string | null;
-  last_checked_at: string;
-};
-
-type DashboardRow = {
-  shelf_item_id: string;
-  title: string;
-  author: string | null;
-  shelf: string | null;
-  needs_fuzzy_match: boolean;
-  match: MatchMini | null;
-  availability: Availability[];
-  read_next: ReadNext;
-};
-
-type DashboardResponse = {
-  settings: {
-    library_system: string | null;
-    preferred_formats: string[];
-    updated_at: string;
-  };
-  last_sync: {
-    source_type: string | null;
-    source_id: string | null;
-    last_synced_at: string | null;
-    last_sync_status: string | null;
-    last_sync_error: string | null;
-  };
-  page: {
-    limit: number;
-    offset: number;
-    total: number;
-  };
-  items: DashboardRow[];
-};
-
-type SortKey = "read_next" | "availability" | "title";
-type FilterKey = "all" | "available" | "hold" | "not_owned";
-
-const DEFAULT_SORT: SortKey = "read_next";
-const DEFAULT_FILTER: FilterKey = "all";
-
-function availabilityStatus(row: DashboardRow): FilterKey {
-  if (!row.match) return "not_owned";
-  if (row.availability.some((a) => a.status === "available")) return "available";
-  if (row.availability.some((a) => a.status === "hold")) return "hold";
-  return "not_owned";
-}
-
-function availabilityRank(row: DashboardRow): number {
-  const s = availabilityStatus(row);
-  if (s === "available") return 3;
-  if (s === "hold") return 2;
-  if (s === "not_owned") return 1;
-  return 0;
-}
+import { readNextTooltip } from "@/lib/readNext";
+import { useDashboard, availabilityStatus } from "./useDashboard";
 
 export default function DashboardPage() {
   return (
@@ -88,49 +16,7 @@ export default function DashboardPage() {
 }
 
 function DashboardInner() {
-  const [data, setData] = useState<DashboardResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-
-    (async () => {
-      try {
-        const res = await apiFetch<DashboardResponse>(`/v1/dashboard?limit=200&offset=0&sort=read_next`);
-        if (!alive) return;
-        setData(res);
-      } catch (e) {
-        if (!alive) return;
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const filtered = useMemo(() => {
-    if (!data) return [];
-
-    const rows = [...data.items];
-
-    const sorted = rows.sort((a, b) => {
-      if (DEFAULT_SORT === "read_next") return compareReadNext(a, b);
-      if (DEFAULT_SORT === "availability") {
-        const ra = availabilityRank(a);
-        const rb = availabilityRank(b);
-        if (ra !== rb) return rb - ra;
-        return a.title.localeCompare(b.title);
-      }
-      return a.title.localeCompare(b.title);
-    });
-
-    return sorted.filter((r) => {
-      if (DEFAULT_FILTER === "all") return true;
-      return availabilityStatus(r) === DEFAULT_FILTER;
-    });
-  }, [data]);
+  const { data, error, filtered } = useDashboard();
 
   return (
     <main className="p-6 max-w-6xl mx-auto">

@@ -1,0 +1,39 @@
+{
+  "name": "shelfsync-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-30",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "shelfsync",
+      "database_id": "9181baf0-e639-4ef6-b09c-8382c18da561"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "SYNC_QUEUE",
+        "queue": "shelfsync-syncs"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "shelfsync-syncs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SYNC_RUN_EVENTS",
+        "class_name": "SyncRunEvents"
+      },
+      {
+        "name": "NOTIFICATION_EVENTS",
+        "class_name": "NotificationEvents"
+      }
+    ]
+  }
+}

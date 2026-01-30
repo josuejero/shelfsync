@@ -1,80 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
 
 import { AuthGuard } from "@/components/AuthGuard";
-import { apiFetch } from "@/lib/api";
-import { compareReadNext, readNextTooltip, type ReadNext } from "@/lib/readNext";
-
-type Availability = {
-  format: string;
-  status: "available" | "hold" | "not_owned";
-  copies_available: number | null;
-  copies_total: number | null;
-  holds: number | null;
-  deep_link: string | null;
-  last_checked_at: string;
-};
-
-type CatalogItem = {
-  id: string;
-  provider: string;
-  provider_item_id: string;
-  title: string;
-  author: string | null;
-  isbn10: string | null;
-  isbn13: string | null;
-  asin: string | null;
-};
-
-type Match = {
-  method: string;
-  confidence: number;
-  evidence: Record<string, unknown>;
-  catalog_item: CatalogItem;
-} | null;
-
-type BookDetail = {
-  shelf_item: {
-    id: string;
-    title: string;
-    author: string;
-    isbn10: string | null;
-    isbn13: string | null;
-    asin: string | null;
-    shelf: string | null;
-    needs_fuzzy_match: boolean;
-    created_at: string;
-  };
-  source: {
-    source_type: string | null;
-    source_ref: string | null;
-    last_synced_at: string | null;
-    last_sync_status: string | null;
-    last_sync_error: string | null;
-  };
-  match: Match;
-  availability: Availability[];
-  settings: {
-    library_system: string | null;
-    preferred_formats: string[];
-    updated_at: string;
-  };
-  read_next: ReadNext;
-};
-
-type DashboardRow = {
-  shelf_item_id: string;
-  title: string;
-  author: string | null;
-  read_next: ReadNext;
-};
-
-type DashboardResponse = {
-  items: DashboardRow[];
-  page: { total: number; limit: number; offset: number };
-};
+import { useBookDetail } from "./useBookDetail";
 
 export default function BookDetailPage({ params }: { params: { id: string } }) {
   return (
@@ -85,50 +14,7 @@ export default function BookDetailPage({ params }: { params: { id: string } }) {
 }
 
 function BookDetailInner({ id }: { id: string }) {
-  const [data, setData] = useState<BookDetail | null>(null);
-  const [rank, setRank] = useState<number | null>(null);
-  const [rankLoading, setRankLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-
-    setData(null);
-    setRank(null);
-    setError(null);
-
-    (async () => {
-      try {
-        const book = await apiFetch<BookDetail>(`/v1/books/${id}`);
-        if (!alive) return;
-        setData(book);
-      } catch (e) {
-        if (!alive) return;
-        setError(e instanceof Error ? e.message : String(e));
-        return;
-      }
-
-      setRankLoading(true);
-      try {
-        const dash = await apiFetch<DashboardResponse>(`/v1/dashboard?limit=500&offset=0&sort=read_next`);
-        if (!alive) return;
-        const ranked = [...dash.items].sort(compareReadNext);
-        const idx = ranked.findIndex((r) => r.shelf_item_id === id);
-        setRank(idx >= 0 ? idx + 1 : null);
-      } catch {
-        if (!alive) return;
-        setRank(null);
-      } finally {
-        if (alive) setRankLoading(false);
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [id]);
-
-  const rnTooltip = useMemo(() => (data ? readNextTooltip(data.read_next) : ""), [data]);
+  const { data, rank, rankLoading, error, tooltip } = useBookDetail(id);
 
   if (error) {
     return (
@@ -204,7 +90,7 @@ function BookDetailInner({ id }: { id: string }) {
                 <li key={i}>{r}</li>
               ))}
             </ul>
-            <div className="text-xs text-gray-500 mt-3 whitespace-pre-line" title={rnTooltip}>
+            <div className="text-xs text-gray-500 mt-3 whitespace-pre-line" title={tooltip}>
               Tip: hover for the full scoring summary.
             </div>
           </div>
