@@ -2,12 +2,11 @@ from typing import Literal
 
 from app.api.deps import get_current_user
 from app.api.rate_limit import rate_limiter
+from app.api.routes.dashboard_build import build_dashboard_out
 from app.db.session import get_db
 from app.schemas.dashboard import DashboardOut
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-
-from app.api.routes.dashboard_build import build_dashboard_out
 
 router = APIRouter(prefix="/v1", tags=["dashboard"])
 

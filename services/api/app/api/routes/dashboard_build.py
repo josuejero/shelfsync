@@ -1,13 +1,6 @@
 from datetime import datetime, timezone
 from typing import Literal, Sequence
 
-from app.models.shelf_item import ShelfItem
-from app.models.shelf_source import ShelfSource
-from app.models.user_settings import UserSettings
-from app.schemas.dashboard import DashboardOut, LastSyncOut, PageOut
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from app.api.routes.dashboard_queries import (
     build_rows,
     load_availability,
@@ -16,6 +9,12 @@ from app.api.routes.dashboard_queries import (
     load_shelf_items,
     sort_rows,
 )
+from app.models.shelf_item import ShelfItem
+from app.models.shelf_source import ShelfSource
+from app.models.user_settings import UserSettings
+from app.schemas.dashboard import DashboardOut, LastSyncOut, PageOut
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 
 def build_dashboard_out(
