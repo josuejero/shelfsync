@@ -19,7 +19,12 @@ from app.api.routes.dashboard_queries import (
 
 
 def build_dashboard_out(
-    *, db: Session, user, limit: int, offset: int, sort: Literal["read_next", "title", "updated"]
+    *,
+    db: Session,
+    user,
+    limit: int,
+    offset: int,
+    sort: Literal["read_next", "title", "updated"]
 ) -> DashboardOut:
     settings = _ensure_user_settings(db, user.id)
     preferred_formats = list(settings.preferred_formats or [])
@@ -54,7 +59,9 @@ def build_dashboard_out(
 
 
 def _ensure_user_settings(db: Session, user_id: str) -> UserSettings:
-    settings = db.execute(select(UserSettings).where(UserSettings.user_id == user_id)).scalar_one_or_none()
+    settings = db.execute(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    ).scalar_one_or_none()
     if settings is None:
         settings = UserSettings(user_id=user_id)
         db.add(settings)
@@ -92,7 +99,13 @@ def _build_last_sync(sources: Sequence[ShelfSource]) -> LastSyncOut:
     )
 
 
-def _empty_dashboard(settings: UserSettings, preferred_formats: list[str], last_sync: LastSyncOut, limit: int, offset: int) -> DashboardOut:
+def _empty_dashboard(
+    settings: UserSettings,
+    preferred_formats: list[str],
+    last_sync: LastSyncOut,
+    limit: int,
+    offset: int,
+) -> DashboardOut:
     return DashboardOut(
         settings={
             "library_system": settings.library_system,
@@ -106,7 +119,9 @@ def _empty_dashboard(settings: UserSettings, preferred_formats: list[str], last_
 
 
 def _ensure_user_settings(db: Session, user_id: str) -> UserSettings:
-    settings = db.execute(select(UserSettings).where(UserSettings.user_id == user_id)).scalar_one_or_none()
+    settings = db.execute(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    ).scalar_one_or_none()
     if settings is None:
         settings = UserSettings(user_id=user_id)
         db.add(settings)
@@ -144,7 +159,13 @@ def _build_last_sync(sources: Sequence[ShelfSource]) -> LastSyncOut:
     )
 
 
-def _empty_dashboard(settings: UserSettings, preferred_formats: list[str], last_sync: LastSyncOut, limit: int, offset: int) -> DashboardOut:
+def _empty_dashboard(
+    settings: UserSettings,
+    preferred_formats: list[str],
+    last_sync: LastSyncOut,
+    limit: int,
+    offset: int,
+) -> DashboardOut:
     return DashboardOut(
         settings={
             "library_system": settings.library_system,

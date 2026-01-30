@@ -48,7 +48,9 @@ def downgrade_shelf_sources() -> None:
     )
     op.add_column(
         "shelf_sources",
-        sa.Column("shelf_name", sa.VARCHAR(length=200), autoincrement=False, nullable=True),
+        sa.Column(
+            "shelf_name", sa.VARCHAR(length=200), autoincrement=False, nullable=True
+        ),
     )
     op.create_unique_constraint(
         op.f("uq_shelf_source_user_type_ref"),

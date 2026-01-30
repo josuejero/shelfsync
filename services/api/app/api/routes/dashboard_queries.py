@@ -6,20 +6,29 @@ from app.models.availability_snapshot import AvailabilitySnapshot
 from app.models.catalog_item import CatalogItem
 from app.models.catalog_match import CatalogMatch
 from app.models.shelf_item import ShelfItem
-from app.schemas.dashboard import AvailabilityOut, DashboardRowOut, MatchMiniOut, ReadNextOut
+from app.schemas.dashboard import (
+    AvailabilityOut,
+    DashboardRowOut,
+    MatchMiniOut,
+    ReadNextOut,
+)
 from app.services.read_next_scoring import compute_read_next
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 
-def load_shelf_items(db: Session, user_id: str, source_ids: Sequence[str]) -> Sequence[ShelfItem]:
+def load_shelf_items(
+    db: Session, user_id: str, source_ids: Sequence[str]
+) -> Sequence[ShelfItem]:
     stmt = select(ShelfItem).where(ShelfItem.user_id == user_id)
     if source_ids:
         stmt = stmt.where(ShelfItem.shelf_source_id.in_(source_ids))
     return db.execute(stmt).scalars().all()
 
 
-def load_matches(db: Session, user_id: str, shelf_item_ids: Sequence[str]) -> dict[str, CatalogMatch]:
+def load_matches(
+    db: Session, user_id: str, shelf_item_ids: Sequence[str]
+) -> dict[str, CatalogMatch]:
     if not shelf_item_ids:
         return {}
     matches = (
@@ -35,7 +44,9 @@ def load_matches(db: Session, user_id: str, shelf_item_ids: Sequence[str]) -> di
     return {m.shelf_item_id: m for m in matches}
 
 
-def load_catalog_items(db: Session, matches: dict[str, CatalogMatch]) -> dict[str, CatalogItem]:
+def load_catalog_items(
+    db: Session, matches: dict[str, CatalogMatch]
+) -> dict[str, CatalogItem]:
     catalog_ids = {match.catalog_item_id for match in matches.values()}
     if not catalog_ids:
         return {}
@@ -130,6 +141,7 @@ def sort_rows(
     elif sort == "updated":
         updated_map = {item.id: item.updated_at for item in shelf_items}
         rows.sort(
-            key=lambda r: updated_map.get(r.shelf_item_id) or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda r: updated_map.get(r.shelf_item_id)
+            or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,
         )
