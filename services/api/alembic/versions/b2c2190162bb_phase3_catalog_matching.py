@@ -6,9 +6,9 @@ Create Date: 2025-12-23 19:37:31.748233
 
 """
 
-from typing import Union
+from typing import Sequence, Union
 
-from .b2c2190162bb_catalog_ops import (
+from alembic_helpers.catalog_ops import (
     create_availability_snapshots,
     create_catalog_items,
     create_catalog_matches,
@@ -16,7 +16,7 @@ from .b2c2190162bb_catalog_ops import (
     drop_catalog_items,
     drop_catalog_matches,
 )
-from .b2c2190162bb_shelf_ops import (
+from alembic_helpers.shelf_ops import (
     downgrade_shelf_items,
     downgrade_shelf_sources,
     upgrade_shelf_items,
