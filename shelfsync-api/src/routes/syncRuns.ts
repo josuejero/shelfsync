@@ -3,12 +3,11 @@ import { jsonResponse } from "../utils/http";
 import { requireAuthUser } from "../auth/session";
 import {
 	createSyncRun,
-	enqueueSyncMessage,
 	fetchSyncRunRow,
 	mapSyncRunRow,
-	markSyncRunFailed,
 } from "../db/syncRuns";
-import { notifyFailure, notifyProgress } from "../jobs/sync";
+import { notifyProgress } from "../jobs/sync";
+import { scheduleSyncJob } from "../jobs/scheduler";
 import type { Env } from "../types";
 
 export const registerSyncRunRoutes = (app: Hono<{ Bindings: Env }>) => {
@@ -28,18 +27,11 @@ export const registerSyncRunRoutes = (app: Hono<{ Bindings: Env }>) => {
 
 		await notifyProgress(c.env, run.id, run.progress_current, run.progress_total);
 
-		try {
-			await enqueueSyncMessage(c.env.SYNC_QUEUE, {
-				runId: run.id,
-				userId: user.id,
-				kind: "availability_refresh",
-			});
-		} catch (error) {
-			const errMsg = error instanceof Error ? error.message : "queue unavailable";
-			await markSyncRunFailed(c.env.DB, run.id, errMsg);
-			await notifyFailure(c.env, run.id, errMsg);
-			return jsonResponse({ ok: false, error: "Sync queue unavailable" }, { status: 503 });
-		}
+		scheduleSyncJob(c, {
+			runId: run.id,
+			userId: user.id,
+			kind: "availability_refresh",
+		});
 
 		return jsonResponse({ ok: true, data: { job_id: run.id } }, { status: 202 });
 	});

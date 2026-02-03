@@ -4,14 +4,10 @@ import { requireAuthUser } from "../auth/session";
 import { fetchShelfSourceById } from "../db/shelfSources";
 import {
 	createSyncRun,
-	enqueueSyncMessage,
-	markSyncRunFailed,
 	updateShelfSourceSyncStatus,
 } from "../db/syncRuns";
-import {
-	notifyFailure,
-	notifyProgress,
-} from "../jobs/sync";
+import { notifyProgress } from "../jobs/sync";
+import { scheduleSyncJob } from "../jobs/scheduler";
 import type { Env, SyncRunRow } from "../types";
 
 export const registerShelfSourceSyncRoutes = (app: Hono<{ Bindings: Env }>) => {
@@ -56,20 +52,12 @@ export const registerShelfSourceSyncRoutes = (app: Hono<{ Bindings: Env }>) => {
 
 		await notifyProgress(c.env, run.id, run.progress_current, run.progress_total);
 
-		try {
-			await enqueueSyncMessage(c.env.SYNC_QUEUE, {
-				runId: run.id,
-				userId: user.id,
-				kind: "shelf_source_sync",
-				payload: { sourceId },
-			});
-		} catch (error) {
-			const errMsg = error instanceof Error ? error.message : "queue unavailable";
-			await markSyncRunFailed(c.env.DB, run.id, errMsg);
-			await notifyFailure(c.env, run.id, errMsg);
-			await updateShelfSourceSyncStatus(c.env.DB, sourceId, "failed", errMsg);
-			return jsonResponse({ ok: false, error: "Sync queue unavailable" }, { status: 503 });
-		}
+		scheduleSyncJob(c, {
+			runId: run.id,
+			userId: user.id,
+			kind: "shelf_source_sync",
+			payload: { sourceId },
+		});
 
 		return jsonResponse({ ok: true, data: { job_id: run.id } }, { status: 202 });
 	});

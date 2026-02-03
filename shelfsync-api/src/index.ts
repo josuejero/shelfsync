@@ -1,5 +1,6 @@
 import app from "./app";
-import { queue } from "./queue";
+
+export { NotificationEvents } from "./notificationEvents";
+export { SyncRunEvents } from "./syncRunEvents";
 
 export default app;
-export { queue };

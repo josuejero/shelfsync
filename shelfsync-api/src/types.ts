@@ -1,7 +1,6 @@
 import type {
 	D1Database,
 	DurableObjectNamespace,
-	Queue,
 } from "@cloudflare/workers-types";
 
 export type Env = {
@@ -12,7 +11,6 @@ export type Env = {
 	ALLOW_INSECURE_COOKIES?: string;
 	AUTH_COOKIE_NAME?: string;
 	AUTH_ACCESS_TOKEN_TTL_MINUTES?: string;
-	SYNC_QUEUE?: Queue;
 	SYNC_RUN_EVENTS?: DurableObjectNamespace;
 	NOTIFICATION_EVENTS?: DurableObjectNamespace;
 };

@@ -1,4 +1,4 @@
-import type { D1Database, Queue } from "@cloudflare/workers-types";
+import type { D1Database } from "@cloudflare/workers-types";
 import type { QueueMessage, SyncRunRow, SyncRunResponse } from "../types";
 
 export const mapSyncRunRow = (row: SyncRunRow): SyncRunResponse => ({
@@ -88,11 +88,4 @@ export const updateShelfSourceSyncStatus = async (
 		)
 		.bind(status, errorMessage ?? null, sourceId)
 		.run();
-};
-
-export const enqueueSyncMessage = async (queue: Queue | undefined, message: QueueMessage) => {
-	if (!queue) {
-		throw new Error("sync queue is not configured");
-	}
-	await queue.send(message);
 };
