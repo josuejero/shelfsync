@@ -1,0 +1,14 @@
+# monorepo web app junk
+apps/web/node_modules
+apps/web/.next
+apps/web/test-results
+apps/web/.vercel
+
+# general junk
+node_modules
+.next
+test-results
+.vercel
+
+# large local artifacts
+repomix-output.xml
